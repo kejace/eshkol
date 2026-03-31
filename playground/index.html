@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Eshkol Playground</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --bg-surface: #181825;
+    --bg-editor: #11111b;
+    --text: #cdd6f4;
+    --text-dim: #6c7086;
+    --accent: #89b4fa;
+    --accent-hover: #b4d0fb;
+    --green: #a6e3a1;
+    --red: #f38ba8;
+    --orange: #fab387;
+    --yellow: #f9e2af;
+    --mauve: #cba6f7;
+    --border: #313244;
+    --radius: 6px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+  }
+
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.3px;
+  }
+
+  header h1 span {
+    color: var(--accent);
+  }
+
+  .header-meta {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+  }
+
+  .panel:first-child {
+    border-right: 1px solid var(--border);
+  }
+
+  #editor {
+    flex: 1;
+    width: 100%;
+    background: var(--bg-editor);
+    color: var(--text);
+    border: none;
+    outline: none;
+    resize: none;
+    padding: 16px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    tab-size: 2;
+  }
+
+  #editor::placeholder {
+    color: var(--text-dim);
+  }
+
+  .actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  button {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--border);
+    padding: 4px 12px;
+    border-radius: var(--radius);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  button:hover {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
+
+  button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  button:disabled:hover {
+    background: transparent;
+    color: var(--accent);
+    border-color: var(--border);
+  }
+
+  button.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
+
+  .output-wrap {
+    flex: 1;
+    overflow: auto;
+    background: var(--bg-editor);
+    min-height: 0;
+  }
+
+  #output {
+    padding: 16px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-height: 100%;
+  }
+
+  #output.error {
+    color: var(--red);
+  }
+
+  /* JSON syntax coloring */
+  .json-key { color: var(--accent); }
+  .json-string { color: var(--green); }
+  .json-number { color: var(--orange); }
+  .json-bool { color: var(--mauve); }
+  .json-null { color: var(--text-dim); }
+
+  footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-surface);
+    font-size: 12px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  #status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    background: var(--yellow);
+  }
+
+  #status-dot.ready { background: var(--green); }
+  #status-dot.error { background: var(--red); }
+
+  kbd {
+    background: var(--border);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: inherit;
+  }
+
+  @media (max-width: 768px) {
+    .panels {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr 1fr;
+    }
+    .panel:first-child {
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+    }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span>Eshkol</span> Playground</h1>
+  <div class="header-meta">compiler frontend in WebAssembly</div>
+</header>
+
+<div class="panels">
+  <div class="panel">
+    <div class="panel-header">
+      <span>Editor</span>
+      <span><kbd>Ctrl+Enter</kbd> Parse &nbsp; <kbd>Ctrl+Shift+Enter</kbd> Pretty Print</span>
+    </div>
+    <textarea id="editor" spellcheck="false" placeholder="Type Eshkol code here...">;; Eshkol Playground
+;; Click "Parse" to see the AST, or "Pretty Print" for formatted output.
+
+(define pi 3.14159265)
+
+(define (square x) (* x x))
+
+(define (cube x) (* x (* x x)))
+
+(define (compose f g)
+  (lambda (x) (f (g x))))
+
+(let ((radius 5.0)
+      (area (lambda (r) (* pi (square r)))))
+  (area radius))
+</textarea>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span>Output</span>
+      <div class="actions">
+        <button id="btn-parse" disabled>Parse</button>
+        <button id="btn-pretty" disabled>Pretty Print</button>
+        <button id="btn-clear" disabled>Clear</button>
+      </div>
+    </div>
+    <div class="output-wrap">
+      <div id="output"></div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div><span id="status-dot"></span><span id="status">Loading compiler...</span></div>
+  <div id="timing"></div>
+</footer>
+
+<script type="module">
+  const editor = document.getElementById('editor');
+  const output = document.getElementById('output');
+  const status = document.getElementById('status');
+  const statusDot = document.getElementById('status-dot');
+  const timing = document.getElementById('timing');
+  const btnParse = document.getElementById('btn-parse');
+  const btnPretty = document.getElementById('btn-pretty');
+  const btnClear = document.getElementById('btn-clear');
+
+  let eshkol = null;
+
+  // --- Editor helpers ---
+
+  editor.addEventListener('keydown', (e) => {
+    // Tab inserts 2 spaces
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = editor.selectionStart;
+      const end = editor.selectionEnd;
+      editor.value = editor.value.substring(0, start) + '  ' + editor.value.substring(end);
+      editor.selectionStart = editor.selectionEnd = start + 2;
+    }
+
+    // Ctrl+Enter = Parse
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+      e.preventDefault();
+      if (eshkol) runParse();
+    }
+
+    // Ctrl+Shift+Enter = Pretty Print
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+      e.preventDefault();
+      if (eshkol) runPrettyPrint();
+    }
+  });
+
+  // --- JSON syntax highlighting ---
+
+  function highlightJSON(json) {
+    const str = JSON.stringify(json, null, 2);
+    return str.replace(
+      /("(?:\\.|[^"\\])*")\s*:/g,
+      '<span class="json-key">$1</span>:'
+    ).replace(
+      /:\s*("(?:\\.|[^"\\])*")/g,
+      (match, val) => ': <span class="json-string">' + val + '</span>'
+    ).replace(
+      /:\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+      ': <span class="json-number">$1</span>'
+    ).replace(
+      /:\s*(true|false)/g,
+      ': <span class="json-bool">$1</span>'
+    ).replace(
+      /:\s*(null)/g,
+      ': <span class="json-null">$1</span>'
+    );
+  }
+
+  // --- Actions ---
+
+  function runParse() {
+    const source = editor.value;
+    output.className = '';
+    try {
+      const t0 = performance.now();
+      const result = eshkol.parse(source);
+      const elapsed = (performance.now() - t0).toFixed(1);
+
+      if (result.error) {
+        output.className = 'error';
+        output.textContent = 'Error: ' + result.error;
+        timing.textContent = '';
+      } else {
+        output.innerHTML = highlightJSON(result);
+        timing.textContent = `Parsed in ${elapsed}ms \u2014 ${result.count} expression${result.count !== 1 ? 's' : ''}`;
+      }
+      btnParse.classList.add('active');
+      btnPretty.classList.remove('active');
+    } catch (e) {
+      output.className = 'error';
+      output.textContent = 'Error: ' + e.message;
+      timing.textContent = '';
+    }
+  }
+
+  function runPrettyPrint() {
+    const source = editor.value;
+    output.className = '';
+    try {
+      const t0 = performance.now();
+      const result = eshkol.prettyPrint(source);
+      const elapsed = (performance.now() - t0).toFixed(1);
+
+      output.textContent = result;
+      timing.textContent = `Pretty-printed in ${elapsed}ms`;
+      btnPretty.classList.add('active');
+      btnParse.classList.remove('active');
+    } catch (e) {
+      output.className = 'error';
+      output.textContent = 'Error: ' + e.message;
+      timing.textContent = '';
+    }
+  }
+
+  btnParse.addEventListener('click', runParse);
+  btnPretty.addEventListener('click', runPrettyPrint);
+  btnClear.addEventListener('click', () => {
+    output.textContent = '';
+    output.className = '';
+    output.innerHTML = '';
+    timing.textContent = '';
+    btnParse.classList.remove('active');
+    btnPretty.classList.remove('active');
+  });
+
+  // --- Init ---
+
+  try {
+    const { init } = await import('./wasm/eshkol.js');
+    const t0 = performance.now();
+    eshkol = await init();
+    const elapsed = (performance.now() - t0).toFixed(0);
+
+    status.textContent = `Ready (loaded in ${elapsed}ms)`;
+    statusDot.className = 'ready';
+    btnParse.disabled = false;
+    btnPretty.disabled = false;
+    btnClear.disabled = false;
+  } catch (e) {
+    status.textContent = 'Failed to load: ' + e.message;
+    statusDot.className = 'error';
+    console.error('Eshkol init failed:', e);
+  }
+</script>
+
+</body>
+</html>

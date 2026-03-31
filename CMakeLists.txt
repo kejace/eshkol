@@ -349,6 +349,18 @@ if(EMSCRIPTEN)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/wasm"
   )
 
+  # Copy playground and JS wrapper to build directory
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/playground/index.html"
+    "${CMAKE_BINARY_DIR}/index.html"
+    COPYONLY
+  )
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/wasm/eshkol.js"
+    "${CMAKE_BINARY_DIR}/wasm/eshkol.js"
+    COPYONLY
+  )
+
   message(STATUS "Emscripten wasm target enabled - target: eshkol-wasm")
 endif()
 
