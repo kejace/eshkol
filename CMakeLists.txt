@@ -25,10 +25,11 @@ option(ESHKOL_ENABLE_ASAN "Enable Address Sanitizer" OFF)
 option(ESHKOL_ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
 option(ESHKOL_ENABLE_CTEST_SUITES "Register grouped CTest suites" ON)
 
-# LLVM backend is always enabled
-set(ESHKOL_BUILD_BACKEND ON)
+# LLVM backend (can be disabled for wasm/frontend-only builds)
+option(ESHKOL_BUILD_BACKEND "Build LLVM backend" ON)
 
-# LLVM Configuration - Always required
+if(ESHKOL_BUILD_BACKEND)
+# LLVM Configuration - Required when backend is enabled
 find_program(
   LLVM_CONFIG_EXECUTABLE
   NAMES llvm-config llvm-config-21 llvm-config-20 llvm-config-18 llvm-config-17
@@ -135,6 +136,22 @@ function(eshkol_apply_llvm_target_settings target_name)
   endif()
 endfunction()
 
+else() # ESHKOL_BUILD_BACKEND is OFF
+
+  # No LLVM - set dummy values for build_config.h
+  set(LLC_EXECUTABLE "")
+
+  function(eshkol_apply_llvm_target_settings target_name)
+    target_include_directories(${target_name} PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/inc
+      ${ESHKOL_GENERATED_INCLUDE_DIR}
+    )
+  endfunction()
+
+  message(STATUS "LLVM backend disabled - building frontend only")
+
+endif() # ESHKOL_BUILD_BACKEND
+
 # Make uninstall.
 add_custom_target("uninstall" COMMENT "Uninstall installed files")
 add_custom_command(
@@ -161,6 +178,11 @@ file(GLOB_RECURSE LIB_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/*.c*")
 # Exclude REPL sources from main library (REPL will be separate)
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/repl/.*")
 
+# When backend is disabled, exclude backend sources (they're all #ifdef'd anyway)
+if(NOT ESHKOL_BUILD_BACKEND)
+  list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/.*")
+endif()
+
 # Get REPL sources separately
 file(GLOB REPL_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/repl/*.cpp")
 
@@ -179,121 +201,145 @@ target_include_directories(
 
 eshkol_apply_llvm_target_settings(eshkol-static)
 
-# Extract library directories from LDFLAGS for proper linking
-string(REGEX MATCHALL "-L[^ ]+" LLVM_LIBRARY_DIR_FLAGS "${LLVM_LDFLAGS}")
-set(LLVM_LIBRARY_DIRS "")
-foreach(lib_dir_flag ${LLVM_LIBRARY_DIR_FLAGS})
-    string(REGEX REPLACE "^-L" "" lib_dir "${lib_dir_flag}")
-    list(APPEND LLVM_LIBRARY_DIRS "${lib_dir}")
-endforeach()
+if(ESHKOL_BUILD_BACKEND)
+  # Extract library directories from LDFLAGS for proper linking
+  string(REGEX MATCHALL "-L[^ ]+" LLVM_LIBRARY_DIR_FLAGS "${LLVM_LDFLAGS}")
+  set(LLVM_LIBRARY_DIRS "")
+  foreach(lib_dir_flag ${LLVM_LIBRARY_DIR_FLAGS})
+      string(REGEX REPLACE "^-L" "" lib_dir "${lib_dir_flag}")
+      list(APPEND LLVM_LIBRARY_DIRS "${lib_dir}")
+  endforeach()
 
-# Add library directories if found
-if(LLVM_LIBRARY_DIRS)
-    target_link_directories(eshkol-static PRIVATE ${LLVM_LIBRARY_DIRS})
-endif()
-
-# For each executable inside the executable files create the executable with LLVM backend.
-set(EXES)
-foreach (exe ${EXE_SRC})
-  get_filename_component(exename ${exe} NAME_WE)
-
-  # Skip eshkol-repl - it's handled separately below
-  if(exename STREQUAL "eshkol-repl")
-    continue()
+  # Add library directories if found
+  if(LLVM_LIBRARY_DIRS)
+      target_link_directories(eshkol-static PRIVATE ${LLVM_LIBRARY_DIRS})
   endif()
 
-  list(APPEND EXES ${exename})
+  # For each executable inside the executable files create the executable with LLVM backend.
+  set(EXES)
+  foreach (exe ${EXE_SRC})
+    get_filename_component(exename ${exe} NAME_WE)
 
-  # Compile main executable source as object file
-  add_executable(${exename} ${exe})
-  eshkol_apply_llvm_target_settings(${exename})
-  target_link_libraries(${exename} PUBLIC eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
-endforeach ()
+    # Skip eshkol-repl - it's handled separately below
+    if(exename STREQUAL "eshkol-repl")
+      continue()
+    endif()
 
-install(TARGETS ${EXES} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(TARGETS eshkol-static ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
+    # Skip eshkol-wasm - it's handled in the Emscripten section
+    if(exename STREQUAL "eshkol-wasm")
+      continue()
+    endif()
 
-# ===== Pre-compiled Standard Library =====
-# Compile stdlib.esk to stdlib.o for faster compilation of user programs
-set(STDLIB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lib/stdlib.esk")
-set(STDLIB_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stdlib.o")
+    list(APPEND EXES ${exename})
 
-add_custom_command(
-  OUTPUT ${STDLIB_OUTPUT}
-  COMMAND $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
-  DEPENDS eshkol-run ${STDLIB_SOURCE}
-  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-  COMMENT "Compiling standard library to ${STDLIB_OUTPUT}"
-  VERBATIM
-)
+    # Compile main executable source as object file
+    add_executable(${exename} ${exe})
+    eshkol_apply_llvm_target_settings(${exename})
+    target_link_libraries(${exename} PUBLIC eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+  endforeach ()
 
-add_custom_target(stdlib ALL DEPENDS ${STDLIB_OUTPUT})
+  install(TARGETS ${EXES} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(TARGETS eshkol-static ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 
-# Install stdlib.o to lib directory
-install(FILES ${STDLIB_OUTPUT} DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
+  # ===== Pre-compiled Standard Library =====
+  set(STDLIB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lib/stdlib.esk")
+  set(STDLIB_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stdlib.o")
 
-message(STATUS "Standard library will be pre-compiled to: ${STDLIB_OUTPUT}")
-
-# ===== REPL Support =====
-# Optional REPL with JIT execution
-
-option(BUILD_REPL "Build the interactive REPL" ON)
-
-if(BUILD_REPL AND REPL_SRC)
-  # REPL library
-  add_library(eshkol-repl-lib STATIC ${REPL_SRC})
-
-  target_include_directories(eshkol-repl-lib
-    PUBLIC
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc/>
-      $<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>
-    PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl
+  add_custom_command(
+    OUTPUT ${STDLIB_OUTPUT}
+    COMMAND $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
+    DEPENDS eshkol-run ${STDLIB_SOURCE}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Compiling standard library to ${STDLIB_OUTPUT}"
+    VERBATIM
   )
 
-  eshkol_apply_llvm_target_settings(eshkol-repl-lib)
+  add_custom_target(stdlib ALL DEPENDS ${STDLIB_OUTPUT})
+  install(FILES ${STDLIB_OUTPUT} DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
+  message(STATUS "Standard library will be pre-compiled to: ${STDLIB_OUTPUT}")
 
-  # Link against main compiler library and LLVM
-  target_link_libraries(eshkol-repl-lib PUBLIC eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+  # ===== REPL Support =====
+  option(BUILD_REPL "Build the interactive REPL" ON)
 
-  # REPL executable (only if we have the source)
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/exe/eshkol-repl.cpp")
-    add_executable(eshkol-repl exe/eshkol-repl.cpp)
-    eshkol_apply_llvm_target_settings(eshkol-repl)
+  if(BUILD_REPL AND REPL_SRC)
+    add_library(eshkol-repl-lib STATIC ${REPL_SRC})
 
-    # Find readline library (optional but recommended)
-    find_library(READLINE_LIBRARY readline)
-    if(READLINE_LIBRARY)
-      message(STATUS "Found readline: ${READLINE_LIBRARY}")
-      target_link_libraries(eshkol-repl PRIVATE ${READLINE_LIBRARY})
-      target_compile_definitions(eshkol-repl PRIVATE HAVE_READLINE)
-    else()
-      message(WARNING "readline not found - REPL will use basic input (no history)")
+    target_include_directories(eshkol-repl-lib
+      PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc/>
+        $<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>
+      PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl
+    )
+
+    eshkol_apply_llvm_target_settings(eshkol-repl-lib)
+    target_link_libraries(eshkol-repl-lib PUBLIC eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/exe/eshkol-repl.cpp")
+      add_executable(eshkol-repl exe/eshkol-repl.cpp)
+      eshkol_apply_llvm_target_settings(eshkol-repl)
+
+      find_library(READLINE_LIBRARY readline)
+      if(READLINE_LIBRARY)
+        message(STATUS "Found readline: ${READLINE_LIBRARY}")
+        target_link_libraries(eshkol-repl PRIVATE ${READLINE_LIBRARY})
+        target_compile_definitions(eshkol-repl PRIVATE HAVE_READLINE)
+      else()
+        message(WARNING "readline not found - REPL will use basic input (no history)")
+      endif()
+
+      target_link_libraries(eshkol-repl PRIVATE eshkol-repl-lib)
+
+      if(MINGW)
+        target_link_options(eshkol-repl PRIVATE "-Wl,--export-all-symbols")
+      elseif(UNIX AND NOT APPLE)
+        target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
+      endif()
+
+      install(TARGETS eshkol-repl DESTINATION bin)
+      message(STATUS "REPL build enabled - target: eshkol-repl")
     endif()
-
-    target_link_libraries(eshkol-repl PRIVATE eshkol-repl-lib)
-
-    # Export all symbols for JIT symbol resolution
-    # This makes arena_*, printf, etc. available to JIT-compiled code
-    if(MINGW)
-      target_link_options(eshkol-repl PRIVATE "-Wl,--export-all-symbols")
-    elseif(UNIX AND NOT APPLE)
-      target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
-    endif()
-
-    # Install REPL executable
-    install(TARGETS eshkol-repl DESTINATION bin)
-
-    message(STATUS "REPL build enabled - target: eshkol-repl")
   endif()
-endif()
+
+  set(STDLIB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lib/stdlib.esk")
+  install(FILES ${STDLIB_SOURCE} DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/lib/ DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/lib FILES_MATCHING PATTERN "*.esk")
+
+endif() # ESHKOL_BUILD_BACKEND
 
 # where to find our CMake modules
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-include(Packing)
+if(ESHKOL_BUILD_BACKEND)
+  include(Packing)
+endif()
 
-install(FILES ${STDLIB_SOURCE} DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol)
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/lib/ DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/lib FILES_MATCHING PATTERN "*.esk")
+# ===== WebAssembly Target (Emscripten) =====
+if(EMSCRIPTEN)
+  add_executable(eshkol-wasm exe/eshkol-wasm.cpp)
+  target_include_directories(eshkol-wasm PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${ESHKOL_GENERATED_INCLUDE_DIR}
+  )
+  target_link_libraries(eshkol-wasm PRIVATE eshkol-static)
+
+  target_link_options(eshkol-wasm PRIVATE
+    "SHELL:-s EXPORTED_FUNCTIONS=['_eshkol_wasm_parse','_eshkol_wasm_pretty_print','_eshkol_wasm_free','_malloc','_free']"
+    "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
+    "SHELL:-s MODULARIZE=1"
+    "SHELL:-s EXPORT_NAME='EshkolCompiler'"
+    "SHELL:-s ALLOW_MEMORY_GROWTH=1"
+    "SHELL:-s INITIAL_MEMORY=16777216"
+    "SHELL:-s NO_EXIT_RUNTIME=1"
+    "--no-entry"
+  )
+
+  set_target_properties(eshkol-wasm PROPERTIES
+    SUFFIX ".js"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/wasm"
+  )
+
+  message(STATUS "Emscripten wasm target enabled - target: eshkol-wasm")
+endif()
 
 if(ESHKOL_BUILD_TESTS AND ESHKOL_ENABLE_CTEST_SUITES)
   include(cmake/Tests.cmake)

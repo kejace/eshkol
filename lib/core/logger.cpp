@@ -10,7 +10,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
 #include <execinfo.h>
 #include <cxxabi.h>
 #endif
@@ -94,8 +94,8 @@ void eshkol_stacktrace(eshkol_logger_t level)
 
     if (level > max) return;
 
-#ifdef _WIN32
-    printf("%s%10s:%s  stack trace unavailable on Windows builds\n", color, prefix, RESET_COLOR);
+#if defined(_WIN32) || defined(__EMSCRIPTEN__)
+    printf("%s%10s:%s  stack trace unavailable on this platform\n", color, prefix, RESET_COLOR);
 
     if (level == ESHKOL_FATAL) exit(1);
     return;
