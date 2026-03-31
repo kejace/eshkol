@@ -9,10 +9,12 @@
 #include <eshkol/eshkol.h>
 #include <eshkol/llvm_backend.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #ifdef __EMSCRIPTEN__
@@ -383,22 +385,39 @@ const char* eshkol_wasm_pretty_print(const char* source) {
         eshkol_ast_t ast = eshkol_parse_next_ast_from_stream(stream);
         if (ast.type == ESHKOL_INVALID) break;
 
-        // Capture printf output by redirecting stdout
-        char* buf = nullptr;
-        size_t buf_size = 0;
-        FILE* mem = open_memstream(&buf, &buf_size);
-        if (mem) {
-            FILE* old_stdout = stdout;
-            stdout = mem;
+        // Capture printf output by redirecting stdout via dup2
+        // (Emscripten declares stdout as const, so we redirect at fd level)
+        fflush(stdout);
+        int saved_fd = dup(fileno(stdout));
+        char tmpname[] = "/tmp/eshkol_wasm_XXXXXX";
+        int tmpfd = mkstemp(tmpname);
+        if (tmpfd >= 0 && saved_fd >= 0) {
+            dup2(tmpfd, fileno(stdout));
+            close(tmpfd);
             eshkol_ast_pretty_print(&ast, 0);
-            fflush(mem);
-            stdout = old_stdout;
-            fclose(mem);
-            if (buf) {
-                output += buf;
-                output += "\n";
-                free(buf);
+            fflush(stdout);
+            dup2(saved_fd, fileno(stdout));
+            close(saved_fd);
+            // Read back captured output
+            FILE* tmpf = fopen(tmpname, "r");
+            if (tmpf) {
+                fseek(tmpf, 0, SEEK_END);
+                long len = ftell(tmpf);
+                if (len > 0) {
+                    fseek(tmpf, 0, SEEK_SET);
+                    char* buf = (char*)malloc(len + 1);
+                    size_t nread = fread(buf, 1, len, tmpf);
+                    buf[nread] = '\0';
+                    output += buf;
+                    output += "\n";
+                    free(buf);
+                }
+                fclose(tmpf);
             }
+            unlink(tmpname);
+        } else {
+            if (saved_fd >= 0) close(saved_fd);
+            if (tmpfd >= 0) close(tmpfd);
         }
     }
 

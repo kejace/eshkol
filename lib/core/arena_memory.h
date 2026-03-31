@@ -291,9 +291,11 @@ typedef struct eshkol_weak_ref {
     void* data;                     // Original data pointer (may be invalid)
 } eshkol_weak_ref_t;
 
-// Compile-time size validation
+// Compile-time size validation (wasm32 has 4-byte pointers, so header is smaller)
+#if !defined(__EMSCRIPTEN__)
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_shared_header_t) == 24,
                      "Shared header must be 24 bytes for optimal alignment");
+#endif
 
 // Shared allocation functions
 void* shared_allocate(size_t size, void (*destructor)(void*));

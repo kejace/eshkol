@@ -141,6 +141,15 @@ else() # ESHKOL_BUILD_BACKEND is OFF
   # No LLVM - set dummy values for build_config.h
   set(LLC_EXECUTABLE "")
 
+  # Generate build_config.h with empty LLVM paths
+  set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_config.h.in"
+    "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/build_config.h"
+    @ONLY
+  )
+
   function(eshkol_apply_llvm_target_settings target_name)
     target_include_directories(${target_name} PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/inc
@@ -328,6 +337,8 @@ if(EMSCRIPTEN)
     "SHELL:-s MODULARIZE=1"
     "SHELL:-s EXPORT_NAME='EshkolCompiler'"
     "SHELL:-s ALLOW_MEMORY_GROWTH=1"
+    "SHELL:-s ENVIRONMENT='web,node'"
+    "SHELL:-s FORCE_FILESYSTEM=1"
     "SHELL:-s INITIAL_MEMORY=16777216"
     "SHELL:-s NO_EXIT_RUNTIME=1"
     "--no-entry"

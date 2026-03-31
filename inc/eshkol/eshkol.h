@@ -627,20 +627,22 @@ typedef struct ad_tape {
 // Use the macros below to extract/encode these values:
 #define CLOSURE_ENV_GET_NUM_CAPTURES(packed) ((packed) & 0xFFFF)
 #define CLOSURE_ENV_GET_FIXED_PARAMS(packed) (((packed) >> 16) & 0xFFFF)
-#define CLOSURE_ENV_IS_VARIADIC(packed) (((packed) >> 63) & 1)
+#define CLOSURE_ENV_IS_VARIADIC(packed) (((packed) >> (sizeof(size_t) * 8 - 1)) & 1)
 #define CLOSURE_ENV_PACK(num_caps, fixed_params, is_var) \
     (((size_t)(num_caps) & 0xFFFF) | \
      (((size_t)(fixed_params) & 0xFFFF) << 16) | \
-     ((size_t)(is_var) << 63))
+     ((size_t)(is_var) << (sizeof(size_t) * 8 - 1)))
 
 typedef struct eshkol_closure_env {
     size_t num_captures;                  // Packed: num_captures | (fixed_params << 16) | (is_variadic << 63)
     eshkol_tagged_value_t captures[];     // Flexible array of captured values
 } eshkol_closure_env_t;
 
-// Compile-time size validation
+// Compile-time size validation (wasm32 has different pointer/size_t sizes)
+#if !defined(__EMSCRIPTEN__)
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_closure_env_t) == sizeof(size_t),
                      "Closure environment header must be minimal");
+#endif
 
 // Closure return type constants (matches eshkol_value_type_t but with additional info)
 // These are used to determine function behavior without calling it
