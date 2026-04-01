@@ -32,6 +32,7 @@ typedef enum {
     INTERP_VAL_SYMBOL,
     INTERP_VAL_ERROR,
     INTERP_VAL_TAIL_CALL,
+    INTERP_VAL_DUAL,       // Dual number for forward-mode AD
 } interp_val_type_t;
 
 struct interp_val;
@@ -79,6 +80,7 @@ typedef struct interp_val {
         char* error_msg;
         char* symbol;
         struct { struct interp_val* func; struct interp_val** args; uint64_t num_args; } tail_call;
+        struct { double value; double deriv; } dual;
     };
 } interp_val_t;
 
@@ -136,6 +138,9 @@ interp_val_t* interp_make_cons(interp_ctx_t* ctx, interp_val_t* car, interp_val_
 interp_val_t* interp_make_void(interp_ctx_t* ctx);
 interp_val_t* interp_make_error(interp_ctx_t* ctx, const char* msg);
 interp_val_t* interp_make_symbol(interp_ctx_t* ctx, const char* name);
+
+// Dual number constructors
+interp_val_t* interp_make_dual(interp_ctx_t* ctx, double value, double deriv);
 
 // Value display
 char* interp_val_to_string(const interp_val_t* val);

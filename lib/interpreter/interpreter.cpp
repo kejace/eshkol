@@ -87,6 +87,14 @@ interp_val_t* interp_make_error(interp_ctx_t* ctx, const char* msg) {
     return v;
 }
 
+interp_val_t* interp_make_dual(interp_ctx_t* ctx, double value, double deriv) {
+    auto* v = alloc_val(ctx);
+    v->type = INTERP_VAL_DUAL;
+    v->dual.value = value;
+    v->dual.deriv = deriv;
+    return v;
+}
+
 interp_val_t* interp_make_symbol(interp_ctx_t* ctx, const char* name) {
     auto* v = alloc_val(ctx);
     v->type = INTERP_VAL_SYMBOL;
@@ -120,6 +128,7 @@ const char* interp_val_type_name(const interp_val_t* val) {
         case INTERP_VAL_VOID: return "void";
         case INTERP_VAL_SYMBOL: return "symbol";
         case INTERP_VAL_ERROR: return "error";
+        case INTERP_VAL_DUAL: return "dual";
     }
     return "unknown";
 }
@@ -202,6 +211,10 @@ char* interp_val_to_string(const interp_val_t* val) {
         case INTERP_VAL_BUILTIN:
             snprintf(buf, sizeof(buf), "#<builtin:%s>", val->builtin.name);
             return strdup(buf);
+        case INTERP_VAL_DUAL: {
+            snprintf(buf, sizeof(buf), "%.15g", val->dual.value);
+            return strdup(buf);
+        }
         case INTERP_VAL_VOID:
             return strdup("");
         case INTERP_VAL_ERROR:
@@ -480,12 +493,22 @@ static interp_val_t* resolve_tail_calls(interp_val_t* val, interp_ctx_t* ctx) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 static bool val_is_number(const interp_val_t* v) {
-    return v && (v->type == INTERP_VAL_INT || v->type == INTERP_VAL_DOUBLE);
+    return v && (v->type == INTERP_VAL_INT || v->type == INTERP_VAL_DOUBLE || v->type == INTERP_VAL_DUAL);
 }
 
 static double val_as_double(const interp_val_t* v) {
     if (v->type == INTERP_VAL_INT) return (double)v->int_val;
+    if (v->type == INTERP_VAL_DUAL) return v->dual.value;
     return v->double_val;
+}
+
+static double val_dual_deriv(const interp_val_t* v) {
+    if (v->type == INTERP_VAL_DUAL) return v->dual.deriv;
+    return 0.0;  // non-dual values have zero derivative
+}
+
+static bool val_has_dual(const interp_val_t* v) {
+    return v && v->type == INTERP_VAL_DUAL;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -900,6 +923,343 @@ interp_val_t* interp_eval_op(const eshkol_operations_t* op, interp_ctx_t* ctx) {
             return interp_ast_to_datum(&c.variables[0], ctx);
         }
         return interp_make_null(ctx);
+    }
+
+    // ── derivative (forward-mode AD) ─────────────────────────────
+    case ESHKOL_DERIVATIVE_OP: {
+        const auto& d = op->derivative_op;
+        interp_val_t* func = interp_eval(d.function, ctx);
+        if (ctx->error_msg) return func;
+        interp_val_t* point = interp_eval(d.point, ctx);
+        if (ctx->error_msg) return point;
+
+        // Seed dual number: (x, 1.0)
+        interp_val_t* dual_arg = interp_make_dual(ctx, val_as_double(point), 1.0);
+        interp_val_t* result = interp_apply(func, &dual_arg, 1, ctx);
+        if (ctx->error_msg) return result;
+
+        // Extract derivative from result
+        if (result->type == INTERP_VAL_DUAL) {
+            return interp_make_double(ctx, result->dual.deriv);
+        }
+        return interp_make_double(ctx, 0.0); // constant function
+    }
+
+    // ── gradient ───────────────────────────────────────────────────
+    case ESHKOL_GRADIENT_OP: {
+        const auto& g = op->gradient_op;
+        interp_val_t* func = interp_eval(g.function, ctx);
+        if (ctx->error_msg) return func;
+        interp_val_t* point = interp_eval(g.point, ctx);
+        if (ctx->error_msg) return point;
+
+        // Handle scalar point — treat as 1D vector
+        if (point && (point->type == INTERP_VAL_INT || point->type == INTERP_VAL_DOUBLE)) {
+            interp_val_t* dual_arg = interp_make_dual(ctx, val_as_double(point), 1.0);
+            interp_val_t* result = interp_apply(func, &dual_arg, 1, ctx);
+            if (ctx->error_msg) return result;
+            double deriv = (result->type == INTERP_VAL_DUAL) ? result->dual.deriv : 0.0;
+            interp_val_t* lst = interp_make_cons(ctx, interp_make_double(ctx, deriv), interp_make_null(ctx));
+            return interp_make_cons(ctx, interp_make_symbol(ctx, "#vector"), lst);
+        }
+
+        // Point must be a vector
+        if (!point || !(point->type == INTERP_VAL_CONS && point->cons.car &&
+            point->cons.car->type == INTERP_VAL_SYMBOL &&
+            strcmp(point->cons.car->symbol, "#vector") == 0)) {
+            return interp_make_error(ctx, "gradient: point must be a vector");
+        }
+
+        // Collect point values
+        double vals[64];
+        int ndim = 0;
+        interp_val_t* cur = point->cons.cdr;
+        while (cur && cur->type == INTERP_VAL_CONS && ndim < 64) {
+            vals[ndim++] = val_as_double(cur->cons.car);
+            cur = cur->cons.cdr;
+        }
+
+        // For each dimension, seed tangent on that dimension
+        interp_val_t* grad_items[64];
+        for (int i = 0; i < ndim; i++) {
+            // Build vector argument with dual seed on dimension i
+            interp_val_t* elems = interp_make_null(ctx);
+            for (int j = ndim - 1; j >= 0; j--) {
+                interp_val_t* elem = (j == i) ?
+                    interp_make_dual(ctx, vals[j], 1.0) :
+                    interp_make_dual(ctx, vals[j], 0.0);
+                elems = interp_make_cons(ctx, elem, elems);
+            }
+            interp_val_t* vec_arg = interp_make_cons(ctx,
+                interp_make_symbol(ctx, "#vector"), elems);
+
+            interp_val_t* result = interp_apply(func, &vec_arg, 1, ctx);
+            if (ctx->error_msg) return result;
+
+            double deriv = (result->type == INTERP_VAL_DUAL) ? result->dual.deriv : 0.0;
+            grad_items[i] = interp_make_double(ctx, deriv);
+        }
+
+        // Build result vector
+        interp_val_t* lst = interp_make_null(ctx);
+        for (int i = ndim - 1; i >= 0; i--)
+            lst = interp_make_cons(ctx, grad_items[i], lst);
+        return interp_make_cons(ctx, interp_make_symbol(ctx, "#vector"), lst);
+    }
+
+    // ── jacobian ───────────────────────────────────────────────────
+    case ESHKOL_JACOBIAN_OP: {
+        const auto& j = op->jacobian_op;
+        interp_val_t* func = interp_eval(j.function, ctx);
+        if (ctx->error_msg) return func;
+        interp_val_t* point = interp_eval(j.point, ctx);
+        if (ctx->error_msg) return point;
+
+        if (!point || point->type != INTERP_VAL_CONS) return interp_make_error(ctx, "jacobian: need vector");
+        double vals[64];
+        int ndim = 0;
+        interp_val_t* cur = point->cons.cdr;
+        while (cur && cur->type == INTERP_VAL_CONS && ndim < 64) {
+            vals[ndim++] = val_as_double(cur->cons.car);
+            cur = cur->cons.cdr;
+        }
+
+        // For each input dim i, seed tangent, call func, collect output tangents
+        // Build matrix as list of column vectors
+        interp_val_t* columns[64];
+        int num_outputs = 0;
+        for (int i = 0; i < ndim; i++) {
+            interp_val_t* elems = interp_make_null(ctx);
+            for (int jj = ndim - 1; jj >= 0; jj--) {
+                interp_val_t* elem = (jj == i) ?
+                    interp_make_dual(ctx, vals[jj], 1.0) : interp_make_dual(ctx, vals[jj], 0.0);
+                elems = interp_make_cons(ctx, elem, elems);
+            }
+            interp_val_t* vec = interp_make_cons(ctx, interp_make_symbol(ctx, "#vector"), elems);
+            interp_val_t* result = interp_apply(func, &vec, 1, ctx);
+            if (ctx->error_msg) return result;
+
+            // Extract output tangents
+            if (result->type == INTERP_VAL_CONS && result->cons.car &&
+                result->cons.car->type == INTERP_VAL_SYMBOL) {
+                interp_val_t* r = result->cons.cdr;
+                interp_val_t* col_items[64];
+                int nout = 0;
+                while (r && r->type == INTERP_VAL_CONS && nout < 64) {
+                    col_items[nout++] = interp_make_double(ctx,
+                        (r->cons.car->type == INTERP_VAL_DUAL) ? r->cons.car->dual.deriv : 0.0);
+                    r = r->cons.cdr;
+                }
+                if (i == 0) num_outputs = nout;
+                interp_val_t* col = interp_make_null(ctx);
+                for (int k = nout - 1; k >= 0; k--) col = interp_make_cons(ctx, col_items[k], col);
+                columns[i] = col;
+            } else if (result->type == INTERP_VAL_DUAL) {
+                if (i == 0) num_outputs = 1;
+                columns[i] = interp_make_cons(ctx, interp_make_double(ctx, result->dual.deriv), interp_make_null(ctx));
+            }
+        }
+
+        // Build row-major matrix: for each output row, collect from each column
+        interp_val_t* rows = interp_make_null(ctx);
+        for (int r = num_outputs - 1; r >= 0; r--) {
+            interp_val_t* row = interp_make_null(ctx);
+            for (int c = ndim - 1; c >= 0; c--) {
+                interp_val_t* col = columns[c];
+                for (int k = 0; k < r && col && col->type == INTERP_VAL_CONS; k++) col = col->cons.cdr;
+                interp_val_t* val = (col && col->type == INTERP_VAL_CONS) ? col->cons.car : interp_make_double(ctx, 0);
+                row = interp_make_cons(ctx, val, row);
+            }
+            rows = interp_make_cons(ctx, interp_make_cons(ctx, interp_make_symbol(ctx, "#vector"), row), rows);
+        }
+        return interp_make_cons(ctx, interp_make_symbol(ctx, "#vector"), rows);
+    }
+
+    // ── divergence ─────────────────────────────────────────────────
+    case ESHKOL_DIVERGENCE_OP: {
+        const auto& d = op->divergence_op;
+        interp_val_t* func = interp_eval(d.function, ctx);
+        if (ctx->error_msg) return func;
+        interp_val_t* point = interp_eval(d.point, ctx);
+        if (ctx->error_msg) return point;
+
+        // div(F) = sum_i dF_i/dx_i
+        if (!point || point->type != INTERP_VAL_CONS) return interp_make_error(ctx, "divergence: need vector");
+        double vals[64];
+        int ndim = 0;
+        interp_val_t* cur = point->cons.cdr;
+        while (cur && cur->type == INTERP_VAL_CONS && ndim < 64) {
+            vals[ndim++] = val_as_double(cur->cons.car);
+            cur = cur->cons.cdr;
+        }
+
+        double div_sum = 0.0;
+        for (int i = 0; i < ndim; i++) {
+            interp_val_t* elems = interp_make_null(ctx);
+            for (int j = ndim - 1; j >= 0; j--) {
+                interp_val_t* elem = (j == i) ?
+                    interp_make_dual(ctx, vals[j], 1.0) : interp_make_dual(ctx, vals[j], 0.0);
+                elems = interp_make_cons(ctx, elem, elems);
+            }
+            interp_val_t* vec_arg = interp_make_cons(ctx, interp_make_symbol(ctx, "#vector"), elems);
+            interp_val_t* result = interp_apply(func, &vec_arg, 1, ctx);
+            if (ctx->error_msg) return result;
+
+            // Extract i-th component's derivative
+            if (result->type == INTERP_VAL_CONS && result->cons.car &&
+                result->cons.car->type == INTERP_VAL_SYMBOL) {
+                interp_val_t* r = result->cons.cdr;
+                for (int k = 0; k < i && r && r->type == INTERP_VAL_CONS; k++) r = r->cons.cdr;
+                if (r && r->type == INTERP_VAL_CONS && r->cons.car->type == INTERP_VAL_DUAL)
+                    div_sum += r->cons.car->dual.deriv;
+            }
+        }
+        return interp_make_double(ctx, div_sum);
+    }
+
+    // ── laplacian ──────────────────────────────────────────────────
+    case ESHKOL_LAPLACIAN_OP: {
+        const auto& l = op->laplacian_op;
+        interp_val_t* func = interp_eval(l.function, ctx);
+        if (ctx->error_msg) return func;
+        interp_val_t* point = interp_eval(l.point, ctx);
+        if (ctx->error_msg) return point;
+
+        if (!point || point->type != INTERP_VAL_CONS) return interp_make_error(ctx, "laplacian: need vector");
+        double vals[64];
+        int ndim = 0;
+        interp_val_t* cur = point->cons.cdr;
+        while (cur && cur->type == INTERP_VAL_CONS && ndim < 64) {
+            vals[ndim++] = val_as_double(cur->cons.car);
+            cur = cur->cons.cdr;
+        }
+
+        // Laplacian = sum of second partial derivatives
+        // Approximate with central differences on the gradient
+        double h = 1e-5;
+        double lapl = 0.0;
+        for (int i = 0; i < ndim; i++) {
+            // f(x+h*ei) via forward AD
+            auto eval_grad_i = [&](double offset) -> double {
+                interp_val_t* elems = interp_make_null(ctx);
+                for (int j = ndim - 1; j >= 0; j--) {
+                    double vj = vals[j] + (j == i ? offset : 0.0);
+                    interp_val_t* elem = (j == i) ?
+                        interp_make_dual(ctx, vj, 1.0) : interp_make_dual(ctx, vj, 0.0);
+                    elems = interp_make_cons(ctx, elem, elems);
+                }
+                interp_val_t* vec = interp_make_cons(ctx, interp_make_symbol(ctx, "#vector"), elems);
+                interp_val_t* res = interp_apply(func, &vec, 1, ctx);
+                return (res && res->type == INTERP_VAL_DUAL) ? res->dual.deriv : 0.0;
+            };
+            double d_plus = eval_grad_i(h);
+            double d_minus = eval_grad_i(-h);
+            lapl += (d_plus - d_minus) / (2.0 * h);
+        }
+        return interp_make_double(ctx, lapl);
+    }
+
+    // ── curl ───────────────────────────────────────────────────────
+    case ESHKOL_CURL_OP: {
+        const auto& c = op->curl_op;
+        interp_val_t* func = interp_eval(c.function, ctx);
+        if (ctx->error_msg) return func;
+        interp_val_t* point = interp_eval(c.point, ctx);
+        if (ctx->error_msg) return point;
+
+        if (!point || point->type != INTERP_VAL_CONS) return interp_make_error(ctx, "curl: need 3D vector");
+        double vals[3];
+        int ndim = 0;
+        interp_val_t* cur = point->cons.cdr;
+        while (cur && cur->type == INTERP_VAL_CONS && ndim < 3) {
+            vals[ndim++] = val_as_double(cur->cons.car);
+            cur = cur->cons.cdr;
+        }
+        if (ndim != 3) return interp_make_error(ctx, "curl: need 3D vector");
+
+        // Compute partial derivatives: dF_j/dx_i
+        double partials[3][3]; // partials[j][i] = dF_j/dx_i
+        for (int i = 0; i < 3; i++) {
+            interp_val_t* elems = interp_make_null(ctx);
+            for (int j = 2; j >= 0; j--) {
+                interp_val_t* elem = (j == i) ?
+                    interp_make_dual(ctx, vals[j], 1.0) : interp_make_dual(ctx, vals[j], 0.0);
+                elems = interp_make_cons(ctx, elem, elems);
+            }
+            interp_val_t* vec = interp_make_cons(ctx, interp_make_symbol(ctx, "#vector"), elems);
+            interp_val_t* res = interp_apply(func, &vec, 1, ctx);
+            if (ctx->error_msg) return res;
+            // Extract derivatives of each component
+            interp_val_t* r = res->cons.cdr;
+            for (int j = 0; j < 3 && r && r->type == INTERP_VAL_CONS; j++) {
+                partials[j][i] = (r->cons.car->type == INTERP_VAL_DUAL) ? r->cons.car->dual.deriv : 0.0;
+                r = r->cons.cdr;
+            }
+        }
+
+        // curl = (dF3/dy - dF2/dz, dF1/dz - dF3/dx, dF2/dx - dF1/dy)
+        interp_val_t* lst = interp_make_null(ctx);
+        lst = interp_make_cons(ctx, interp_make_double(ctx, partials[1][0] - partials[0][1]), lst);
+        lst = interp_make_cons(ctx, interp_make_double(ctx, partials[0][2] - partials[2][0]), lst);
+        lst = interp_make_cons(ctx, interp_make_double(ctx, partials[2][1] - partials[1][2]), lst);
+        return interp_make_cons(ctx, interp_make_symbol(ctx, "#vector"), lst);
+    }
+
+    // ── hessian ─────────────────────────────────────────────────────
+    case ESHKOL_HESSIAN_OP: {
+        // Approximate using central differences on gradient
+        return interp_make_error(ctx, "hessian: not yet implemented in interpreter");
+    }
+
+    // ── directional derivative ─────────────────────────────────────
+    case ESHKOL_DIRECTIONAL_DERIV_OP: {
+        const auto& dd = op->directional_deriv_op;
+        interp_val_t* func = interp_eval(dd.function, ctx);
+        if (ctx->error_msg) return func;
+        interp_val_t* point = interp_eval(dd.point, ctx);
+        if (ctx->error_msg) return point;
+        interp_val_t* dir = interp_eval(dd.direction, ctx);
+        if (ctx->error_msg) return dir;
+
+        // D_d f(x) = ∇f(x) · d
+        // Compute gradient by seeding each dimension, then dot with direction
+        if (!point || point->type != INTERP_VAL_CONS) return interp_make_error(ctx, "directional-derivative: need vector");
+        double vals[64], dirs[64];
+        int ndim = 0;
+        interp_val_t* cur = point->cons.cdr;
+        while (cur && cur->type == INTERP_VAL_CONS && ndim < 64) {
+            vals[ndim] = val_as_double(cur->cons.car);
+            cur = cur->cons.cdr;
+            ndim++;
+        }
+        cur = dir->cons.cdr;
+        for (int i = 0; i < ndim && cur && cur->type == INTERP_VAL_CONS; i++) {
+            dirs[i] = val_as_double(cur->cons.car);
+            cur = cur->cons.cdr;
+        }
+
+        double result = 0.0;
+        for (int i = 0; i < ndim; i++) {
+            interp_val_t* elems = interp_make_null(ctx);
+            for (int j = ndim - 1; j >= 0; j--) {
+                interp_val_t* elem = (j == i) ?
+                    interp_make_dual(ctx, vals[j], 1.0) : interp_make_dual(ctx, vals[j], 0.0);
+                elems = interp_make_cons(ctx, elem, elems);
+            }
+            interp_val_t* vec = interp_make_cons(ctx, interp_make_symbol(ctx, "#vector"), elems);
+            interp_val_t* res = interp_apply(func, &vec, 1, ctx);
+            if (ctx->error_msg) return res;
+            double grad_i = (res && res->type == INTERP_VAL_DUAL) ? res->dual.deriv : 0.0;
+            result += grad_i * dirs[i];
+        }
+        return interp_make_double(ctx, result);
+    }
+
+    // ── diff (symbolic differentiation) ────────────────────────────
+    case ESHKOL_DIFF_OP: {
+        // For the interpreter, implement as numeric derivative
+        // diff(expr, var) at current binding of var
+        return interp_make_error(ctx, "diff: symbolic differentiation not supported in interpreter (use derivative instead)");
     }
 
     // ── compose ────────────────────────────────────────────────────

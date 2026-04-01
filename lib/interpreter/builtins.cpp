@@ -19,7 +19,7 @@
     }
 
 #define REQUIRE_NUMBER(fname, val) \
-    if (!(val) || ((val)->type != INTERP_VAL_INT && (val)->type != INTERP_VAL_DOUBLE)) { \
+    if (!(val) || ((val)->type != INTERP_VAL_INT && (val)->type != INTERP_VAL_DOUBLE && (val)->type != INTERP_VAL_DUAL)) { \
         char buf[128]; \
         snprintf(buf, sizeof(buf), "%s: expected number, got %s", \
                  fname, interp_val_type_name(val)); \
@@ -27,12 +27,29 @@
     }
 
 static bool is_number(const interp_val_t* v) {
-    return v && (v->type == INTERP_VAL_INT || v->type == INTERP_VAL_DOUBLE);
+    return v && (v->type == INTERP_VAL_INT || v->type == INTERP_VAL_DOUBLE || v->type == INTERP_VAL_DUAL);
 }
 
 static double as_double(const interp_val_t* v) {
     if (v->type == INTERP_VAL_INT) return (double)v->int_val;
+    if (v->type == INTERP_VAL_DUAL) return v->dual.value;
     return v->double_val;
+}
+
+static double as_deriv(const interp_val_t* v) {
+    return (v->type == INTERP_VAL_DUAL) ? v->dual.deriv : 0.0;
+}
+
+static bool any_dual(interp_val_t** args, uint64_t n) {
+    for (uint64_t i = 0; i < n; i++)
+        if (args[i] && args[i]->type == INTERP_VAL_DUAL) return true;
+    return false;
+}
+
+// Return a dual result if any input was dual, otherwise a regular double/int
+static interp_val_t* make_numeric(interp_ctx_t* ctx, double val, double deriv, bool has_dual) {
+    if (has_dual) return interp_make_dual(ctx, val, deriv);
+    return interp_make_double(ctx, val);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -40,11 +57,15 @@ static double as_double(const interp_val_t* v) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 static interp_val_t* builtin_add(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    bool has_d = false;
-    for (uint64_t i = 0; i < n; i++) {
-        REQUIRE_NUMBER("+", args[i]);
-        if (args[i]->type == INTERP_VAL_DOUBLE) has_d = true;
+    for (uint64_t i = 0; i < n; i++) REQUIRE_NUMBER("+", args[i]);
+    bool has_dual = any_dual(args, n);
+    if (has_dual) {
+        double v = 0, d = 0;
+        for (uint64_t i = 0; i < n; i++) { v += as_double(args[i]); d += as_deriv(args[i]); }
+        return interp_make_dual(ctx, v, d);
     }
+    bool has_d = false;
+    for (uint64_t i = 0; i < n; i++) if (args[i]->type == INTERP_VAL_DOUBLE) has_d = true;
     if (has_d) {
         double acc = 0;
         for (uint64_t i = 0; i < n; i++) acc += as_double(args[i]);
@@ -58,6 +79,13 @@ static interp_val_t* builtin_add(interp_val_t** args, uint64_t n, interp_ctx_t* 
 static interp_val_t* builtin_sub(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
     if (n == 0) return interp_make_int(ctx, 0);
     for (uint64_t i = 0; i < n; i++) REQUIRE_NUMBER("-", args[i]);
+    bool has_dual = any_dual(args, n);
+    if (has_dual) {
+        if (n == 1) return interp_make_dual(ctx, -as_double(args[0]), -as_deriv(args[0]));
+        double v = as_double(args[0]), d = as_deriv(args[0]);
+        for (uint64_t i = 1; i < n; i++) { v -= as_double(args[i]); d -= as_deriv(args[i]); }
+        return interp_make_dual(ctx, v, d);
+    }
     bool has_d = false;
     for (uint64_t i = 0; i < n; i++) if (args[i]->type == INTERP_VAL_DOUBLE) has_d = true;
     if (n == 1) return has_d ? interp_make_double(ctx, -as_double(args[0]))
@@ -73,11 +101,20 @@ static interp_val_t* builtin_sub(interp_val_t** args, uint64_t n, interp_ctx_t* 
 }
 
 static interp_val_t* builtin_mul(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    bool has_d = false;
-    for (uint64_t i = 0; i < n; i++) {
-        REQUIRE_NUMBER("*", args[i]);
-        if (args[i]->type == INTERP_VAL_DOUBLE) has_d = true;
+    for (uint64_t i = 0; i < n; i++) REQUIRE_NUMBER("*", args[i]);
+    bool has_dual = any_dual(args, n);
+    if (has_dual) {
+        // Product rule: (a,a')*(b,b') = (a*b, a'*b + a*b')
+        double v = 1.0, d = 0.0;
+        for (uint64_t i = 0; i < n; i++) {
+            double ai = as_double(args[i]), adi = as_deriv(args[i]);
+            d = d * ai + v * adi;  // product rule accumulation
+            v *= ai;
+        }
+        return interp_make_dual(ctx, v, d);
     }
+    bool has_d = false;
+    for (uint64_t i = 0; i < n; i++) if (args[i]->type == INTERP_VAL_DOUBLE) has_d = true;
     if (has_d) {
         double acc = 1;
         for (uint64_t i = 0; i < n; i++) acc *= as_double(args[i]);
@@ -91,15 +128,31 @@ static interp_val_t* builtin_mul(interp_val_t** args, uint64_t n, interp_ctx_t* 
 static interp_val_t* builtin_div(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
     if (n == 0) return interp_make_error(ctx, "/: need at least 1 argument");
     for (uint64_t i = 0; i < n; i++) REQUIRE_NUMBER("/", args[i]);
+    bool has_dual = any_dual(args, n);
+    if (has_dual) {
+        // Quotient rule: (a,a')/(b,b') = (a/b, (a'*b - a*b')/b²)
+        double v = as_double(args[0]), d = as_deriv(args[0]);
+        if (n == 1) {
+            if (v == 0) return interp_make_error(ctx, "/: division by zero");
+            return interp_make_dual(ctx, 1.0 / v, -d / (v * v));
+        }
+        for (uint64_t i = 1; i < n; i++) {
+            double bi = as_double(args[i]), bdi = as_deriv(args[i]);
+            if (bi == 0) return interp_make_error(ctx, "/: division by zero");
+            d = (d * bi - v * bdi) / (bi * bi);
+            v /= bi;
+        }
+        return interp_make_dual(ctx, v, d);
+    }
     double acc = as_double(args[0]);
     if (n == 1) {
         if (acc == 0) return interp_make_error(ctx, "/: division by zero");
         return interp_make_double(ctx, 1.0 / acc);
     }
     for (uint64_t i = 1; i < n; i++) {
-        double d = as_double(args[i]);
-        if (d == 0) return interp_make_error(ctx, "/: division by zero");
-        acc /= d;
+        double dv = as_double(args[i]);
+        if (dv == 0) return interp_make_error(ctx, "/: division by zero");
+        acc /= dv;
     }
     return interp_make_double(ctx, acc);
 }
@@ -456,12 +509,25 @@ static interp_val_t* builtin_write(interp_val_t** args, uint64_t n, interp_ctx_t
 
 static interp_val_t* builtin_sqrt(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
     REQUIRE_ARGS("sqrt", 1); REQUIRE_NUMBER("sqrt", args[0]);
-    return interp_make_double(ctx, sqrt(as_double(args[0])));
+    double v = as_double(args[0]);
+    if (args[0]->type == INTERP_VAL_DUAL) {
+        double sv = sqrt(v);
+        return interp_make_dual(ctx, sv, as_deriv(args[0]) / (2.0 * sv));
+    }
+    return interp_make_double(ctx, sqrt(v));
 }
 
 static interp_val_t* builtin_expt(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
     REQUIRE_ARGS("expt", 2); REQUIRE_NUMBER("expt", args[0]); REQUIRE_NUMBER("expt", args[1]);
-    return interp_make_double(ctx, pow(as_double(args[0]), as_double(args[1])));
+    double a = as_double(args[0]), b = as_double(args[1]);
+    if (any_dual(args, 2)) {
+        double ad = as_deriv(args[0]), bd = as_deriv(args[1]);
+        double v = pow(a, b);
+        // d/dx[a^b] = a^b * (b*a'/a + b'*ln(a))
+        double d = v * (b * ad / a + bd * log(a));
+        return interp_make_dual(ctx, v, d);
+    }
+    return interp_make_double(ctx, pow(a, b));
 }
 
 static interp_val_t* builtin_floor(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
@@ -479,30 +545,25 @@ static interp_val_t* builtin_round(interp_val_t** args, uint64_t n, interp_ctx_t
     return interp_make_int(ctx, (int64_t)round(as_double(args[0])));
 }
 
-static interp_val_t* builtin_sin(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("sin", 1); REQUIRE_NUMBER("sin", args[0]);
-    return interp_make_double(ctx, sin(as_double(args[0])));
+// Macro for dual-aware unary math function
+#define DUAL_UNARY_MATH(name, fn, deriv_expr) \
+static interp_val_t* builtin_##name(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) { \
+    REQUIRE_ARGS(#name, 1); REQUIRE_NUMBER(#name, args[0]); \
+    double v = as_double(args[0]); \
+    if (args[0]->type == INTERP_VAL_DUAL) { \
+        double d = as_deriv(args[0]); \
+        return interp_make_dual(ctx, fn(v), d * (deriv_expr)); \
+    } \
+    return interp_make_double(ctx, fn(v)); \
 }
 
-static interp_val_t* builtin_cos(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("cos", 1); REQUIRE_NUMBER("cos", args[0]);
-    return interp_make_double(ctx, cos(as_double(args[0])));
-}
+DUAL_UNARY_MATH(sin, ::sin, cos(v))
+DUAL_UNARY_MATH(cos, ::cos, -sin(v))
+DUAL_UNARY_MATH(tan, ::tan, 1.0 + tan(v)*tan(v))
+DUAL_UNARY_MATH(exp, ::exp, exp(v))
+DUAL_UNARY_MATH(log, ::log, 1.0/v)
 
-static interp_val_t* builtin_tan(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("tan", 1); REQUIRE_NUMBER("tan", args[0]);
-    return interp_make_double(ctx, tan(as_double(args[0])));
-}
-
-static interp_val_t* builtin_exp(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("exp", 1); REQUIRE_NUMBER("exp", args[0]);
-    return interp_make_double(ctx, exp(as_double(args[0])));
-}
-
-static interp_val_t* builtin_log(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("log", 1); REQUIRE_NUMBER("log", args[0]);
-    return interp_make_double(ctx, log(as_double(args[0])));
-}
+#undef DUAL_UNARY_MATH
 
 // ═══════════════════════════════════════════════════════════════════════════
 // String
@@ -1371,57 +1432,57 @@ static interp_val_t* builtin_string_to_symbol(interp_val_t** args, uint64_t n, i
 // Math (additional trig/hyperbolic)
 // ═══════════════════════════════════════════════════════════════════════════
 
-static interp_val_t* builtin_asin(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("asin", 1); REQUIRE_NUMBER("asin", args[0]);
-    return interp_make_double(ctx, asin(as_double(args[0])));
+#define DUAL_UNARY_MATH3(name, fn, deriv_expr) \
+static interp_val_t* builtin_##name(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) { \
+    REQUIRE_ARGS(#name, 1); REQUIRE_NUMBER(#name, args[0]); \
+    double v = as_double(args[0]); \
+    if (args[0]->type == INTERP_VAL_DUAL) { \
+        double d = as_deriv(args[0]); \
+        return interp_make_dual(ctx, fn(v), d * (deriv_expr)); \
+    } \
+    return interp_make_double(ctx, fn(v)); \
 }
 
-static interp_val_t* builtin_acos(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("acos", 1); REQUIRE_NUMBER("acos", args[0]);
-    return interp_make_double(ctx, acos(as_double(args[0])));
-}
+DUAL_UNARY_MATH3(asin, ::asin, 1.0/sqrt(1.0 - v*v))
+DUAL_UNARY_MATH3(acos, ::acos, -1.0/sqrt(1.0 - v*v))
+DUAL_UNARY_MATH3(asinh, ::asinh, 1.0/sqrt(v*v + 1.0))
+DUAL_UNARY_MATH3(acosh, ::acosh, 1.0/sqrt(v*v - 1.0))
+DUAL_UNARY_MATH3(atanh, ::atanh, 1.0/(1.0 - v*v))
+DUAL_UNARY_MATH3(cbrt, ::cbrt, 1.0/(3.0*cbrt(v)*cbrt(v)))
+
+#undef DUAL_UNARY_MATH3
 
 static interp_val_t* builtin_atan(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    if (n == 1) { REQUIRE_NUMBER("atan", args[0]); return interp_make_double(ctx, atan(as_double(args[0]))); }
+    if (n == 1) {
+        REQUIRE_NUMBER("atan", args[0]);
+        double v = as_double(args[0]);
+        if (args[0]->type == INTERP_VAL_DUAL)
+            return interp_make_dual(ctx, atan(v), as_deriv(args[0]) / (1.0 + v*v));
+        return interp_make_double(ctx, atan(v));
+    }
     if (n == 2) { REQUIRE_NUMBER("atan", args[0]); REQUIRE_NUMBER("atan", args[1]);
                    return interp_make_double(ctx, atan2(as_double(args[0]), as_double(args[1]))); }
     return interp_make_error(ctx, "atan: expected 1-2 arguments");
 }
 
-static interp_val_t* builtin_sinh(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("sinh", 1); REQUIRE_NUMBER("sinh", args[0]);
-    return interp_make_double(ctx, sinh(as_double(args[0])));
+#define DUAL_UNARY_MATH2(name, fn, deriv_expr) \
+static interp_val_t* builtin_##name(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) { \
+    REQUIRE_ARGS(#name, 1); REQUIRE_NUMBER(#name, args[0]); \
+    double v = as_double(args[0]); \
+    if (args[0]->type == INTERP_VAL_DUAL) { \
+        double d = as_deriv(args[0]); \
+        return interp_make_dual(ctx, fn(v), d * (deriv_expr)); \
+    } \
+    return interp_make_double(ctx, fn(v)); \
 }
 
-static interp_val_t* builtin_cosh(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("cosh", 1); REQUIRE_NUMBER("cosh", args[0]);
-    return interp_make_double(ctx, cosh(as_double(args[0])));
-}
+DUAL_UNARY_MATH2(sinh, ::sinh, cosh(v))
+DUAL_UNARY_MATH2(cosh, ::cosh, sinh(v))
+DUAL_UNARY_MATH2(tanh, ::tanh, 1.0 - tanh(v)*tanh(v))
 
-static interp_val_t* builtin_tanh(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("tanh", 1); REQUIRE_NUMBER("tanh", args[0]);
-    return interp_make_double(ctx, tanh(as_double(args[0])));
-}
+#undef DUAL_UNARY_MATH2
 
-static interp_val_t* builtin_asinh(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("asinh", 1); REQUIRE_NUMBER("asinh", args[0]);
-    return interp_make_double(ctx, asinh(as_double(args[0])));
-}
-
-static interp_val_t* builtin_acosh(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("acosh", 1); REQUIRE_NUMBER("acosh", args[0]);
-    return interp_make_double(ctx, acosh(as_double(args[0])));
-}
-
-static interp_val_t* builtin_atanh(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("atanh", 1); REQUIRE_NUMBER("atanh", args[0]);
-    return interp_make_double(ctx, atanh(as_double(args[0])));
-}
-
-static interp_val_t* builtin_cbrt(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("cbrt", 1); REQUIRE_NUMBER("cbrt", args[0]);
-    return interp_make_double(ctx, cbrt(as_double(args[0])));
-}
+// asinh, acosh, atanh, cbrt defined above via DUAL_UNARY_MATH3 macro
 
 static interp_val_t* builtin_exp2(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
     REQUIRE_ARGS("exp2", 1); REQUIRE_NUMBER("exp2", args[0]);
@@ -2096,6 +2157,22 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "error", builtin_error, 0, -1);
     reg(ctx, "begin", builtin_begin, 0, -1);
     reg(ctx, "identity", builtin_identity, 1, 1);
+    reg(ctx, "dual", [](interp_val_t** args, uint64_t n, interp_ctx_t* ctx) -> interp_val_t* {
+        if (n != 2) return interp_make_error(ctx, "dual: expected 2 arguments");
+        return interp_make_dual(ctx, as_double(args[0]), as_double(args[1]));
+    }, 2, 2);
+    reg(ctx, "dual?", [](interp_val_t** args, uint64_t n, interp_ctx_t* ctx) -> interp_val_t* {
+        if (n != 1) return interp_make_error(ctx, "dual?: expected 1 argument");
+        return interp_make_bool(ctx, args[0]->type == INTERP_VAL_DUAL);
+    }, 1, 1);
+    reg(ctx, "dual-value", [](interp_val_t** args, uint64_t n, interp_ctx_t* ctx) -> interp_val_t* {
+        if (n != 1) return interp_make_error(ctx, "dual-value: expected 1 argument");
+        return interp_make_double(ctx, as_double(args[0]));
+    }, 1, 1);
+    reg(ctx, "dual-derivative", [](interp_val_t** args, uint64_t n, interp_ctx_t* ctx) -> interp_val_t* {
+        if (n != 1) return interp_make_error(ctx, "dual-derivative: expected 1 argument");
+        return interp_make_double(ctx, as_deriv(args[0]));
+    }, 1, 1);
     reg(ctx, "print", builtin_display, 1, 1);
     reg(ctx, "compose", builtin_compose, 2, 2);
     reg(ctx, "curry", builtin_curry, 2, -1);
