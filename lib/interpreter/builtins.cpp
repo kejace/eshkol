@@ -1421,6 +1421,185 @@ static interp_val_t* builtin_vector_p(interp_val_t** args, uint64_t n, interp_ct
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Tensor operations (element-wise on vectors)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Helper: apply element-wise binary op on two vectors
+static interp_val_t* tensor_binop(const char* name, interp_val_t* a, interp_val_t* b,
+                                   double (*op)(double, double), interp_ctx_t* ctx) {
+    if (!is_vector(a) || !is_vector(b)) {
+        char buf[64]; snprintf(buf, sizeof(buf), "%s: expected vectors", name);
+        return interp_make_error(ctx, buf);
+    }
+    interp_val_t* da = vector_data(a);
+    interp_val_t* db = vector_data(b);
+    interp_val_t* items[4096];
+    int count = 0;
+    while (da && da->type == INTERP_VAL_CONS && db && db->type == INTERP_VAL_CONS && count < 4096) {
+        if (!is_number(da->cons.car) || !is_number(db->cons.car))
+            return interp_make_error(ctx, name);
+        items[count++] = interp_make_double(ctx, op(as_double(da->cons.car), as_double(db->cons.car)));
+        da = da->cons.cdr; db = db->cons.cdr;
+    }
+    interp_val_t* lst = interp_make_null(ctx);
+    for (int i = count - 1; i >= 0; i--) lst = interp_make_cons(ctx, items[i], lst);
+    return interp_make_cons(ctx, interp_make_symbol(ctx, VECTOR_TAG), lst);
+}
+
+static double op_add(double a, double b) { return a + b; }
+static double op_sub(double a, double b) { return a - b; }
+static double op_mul(double a, double b) { return a * b; }
+static double op_div(double a, double b) { return a / b; }
+
+static interp_val_t* builtin_tensor_add(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("tensor-add", 2); return tensor_binop("tensor-add", args[0], args[1], op_add, ctx);
+}
+static interp_val_t* builtin_tensor_sub(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("tensor-sub", 2); return tensor_binop("tensor-sub", args[0], args[1], op_sub, ctx);
+}
+static interp_val_t* builtin_tensor_mul(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("tensor-mul", 2); return tensor_binop("tensor-mul", args[0], args[1], op_mul, ctx);
+}
+static interp_val_t* builtin_tensor_div(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("tensor-div", 2); return tensor_binop("tensor-div", args[0], args[1], op_div, ctx);
+}
+
+static interp_val_t* builtin_tensor_dot(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("tensor-dot", 2);
+    if (!is_vector(args[0]) || !is_vector(args[1]))
+        return interp_make_error(ctx, "tensor-dot: expected vectors");
+    interp_val_t* da = vector_data(args[0]);
+    interp_val_t* db = vector_data(args[1]);
+    double sum = 0;
+    while (da && da->type == INTERP_VAL_CONS && db && db->type == INTERP_VAL_CONS) {
+        if (!is_number(da->cons.car) || !is_number(db->cons.car))
+            return interp_make_error(ctx, "tensor-dot: non-numeric element");
+        sum += as_double(da->cons.car) * as_double(db->cons.car);
+        da = da->cons.cdr; db = db->cons.cdr;
+    }
+    return interp_make_double(ctx, sum);
+}
+
+static interp_val_t* builtin_tensor_sum(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("tensor-sum", 1);
+    if (!is_vector(args[0])) return interp_make_error(ctx, "tensor-sum: expected vector");
+    double sum = 0;
+    interp_val_t* d = vector_data(args[0]);
+    while (d && d->type == INTERP_VAL_CONS) {
+        if (!is_number(d->cons.car)) return interp_make_error(ctx, "tensor-sum: non-numeric");
+        sum += as_double(d->cons.car);
+        d = d->cons.cdr;
+    }
+    return interp_make_double(ctx, sum);
+}
+
+static interp_val_t* builtin_tensor_mean(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("tensor-mean", 1);
+    if (!is_vector(args[0])) return interp_make_error(ctx, "tensor-mean: expected vector");
+    double sum = 0; int64_t count = 0;
+    interp_val_t* d = vector_data(args[0]);
+    while (d && d->type == INTERP_VAL_CONS) {
+        if (!is_number(d->cons.car)) return interp_make_error(ctx, "tensor-mean: non-numeric");
+        sum += as_double(d->cons.car); count++;
+        d = d->cons.cdr;
+    }
+    return count > 0 ? interp_make_double(ctx, sum / count) : interp_make_double(ctx, 0);
+}
+
+static interp_val_t* builtin_tensor_shape(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("tensor-shape", 1);
+    if (!is_vector(args[0])) return interp_make_error(ctx, "tensor-shape: expected vector");
+    int64_t len = 0;
+    interp_val_t* d = vector_data(args[0]);
+    while (d && d->type == INTERP_VAL_CONS) { len++; d = d->cons.cdr; }
+    return interp_make_cons(ctx, interp_make_symbol(ctx, VECTOR_TAG),
+        interp_make_cons(ctx, interp_make_int(ctx, len), interp_make_null(ctx)));
+}
+
+static interp_val_t* builtin_tensor_apply(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("tensor-apply", 2);
+    if (!is_vector(args[1])) return interp_make_error(ctx, "tensor-apply: expected vector");
+    interp_val_t* func = args[0];
+    interp_val_t* d = vector_data(args[1]);
+    interp_val_t* items[4096]; int count = 0;
+    while (d && d->type == INTERP_VAL_CONS && count < 4096) {
+        items[count] = interp_apply(func, &d->cons.car, 1, ctx);
+        if (ctx->error_msg) return items[count];
+        count++;
+        d = d->cons.cdr;
+    }
+    interp_val_t* lst = interp_make_null(ctx);
+    for (int i = count - 1; i >= 0; i--) lst = interp_make_cons(ctx, items[i], lst);
+    return interp_make_cons(ctx, interp_make_symbol(ctx, VECTOR_TAG), lst);
+}
+
+static interp_val_t* builtin_norm(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("norm", 1);
+    if (!is_vector(args[0])) return interp_make_error(ctx, "norm: expected vector");
+    double sum = 0;
+    interp_val_t* d = vector_data(args[0]);
+    while (d && d->type == INTERP_VAL_CONS) {
+        if (!is_number(d->cons.car)) return interp_make_error(ctx, "norm: non-numeric");
+        double v = as_double(d->cons.car); sum += v * v;
+        d = d->cons.cdr;
+    }
+    return interp_make_double(ctx, sqrt(sum));
+}
+
+static interp_val_t* builtin_zeros(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("zeros", 1); REQUIRE_NUMBER("zeros", args[0]);
+    int64_t len = (int64_t)as_double(args[0]);
+    interp_val_t* lst = interp_make_null(ctx);
+    for (int64_t i = 0; i < len; i++) lst = interp_make_cons(ctx, interp_make_double(ctx, 0), lst);
+    return interp_make_cons(ctx, interp_make_symbol(ctx, VECTOR_TAG), lst);
+}
+
+static interp_val_t* builtin_ones(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("ones", 1); REQUIRE_NUMBER("ones", args[0]);
+    int64_t len = (int64_t)as_double(args[0]);
+    interp_val_t* lst = interp_make_null(ctx);
+    for (int64_t i = 0; i < len; i++) lst = interp_make_cons(ctx, interp_make_double(ctx, 1), lst);
+    return interp_make_cons(ctx, interp_make_symbol(ctx, VECTOR_TAG), lst);
+}
+
+static interp_val_t* builtin_arange(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n < 1 || n > 3) return interp_make_error(ctx, "arange: expected 1-3 arguments");
+    for (uint64_t i = 0; i < n; i++) REQUIRE_NUMBER("arange", args[i]);
+    double start = 0, end_val, step = 1;
+    if (n == 1) { end_val = as_double(args[0]); }
+    else { start = as_double(args[0]); end_val = as_double(args[1]); }
+    if (n == 3) step = as_double(args[2]);
+    if (step == 0) return interp_make_error(ctx, "arange: step cannot be zero");
+
+    interp_val_t* items[4096]; int count = 0;
+    for (double v = start; step > 0 ? v < end_val : v > end_val; v += step) {
+        if (count >= 4096) break;
+        items[count++] = interp_make_double(ctx, v);
+    }
+    interp_val_t* lst = interp_make_null(ctx);
+    for (int i = count - 1; i >= 0; i--) lst = interp_make_cons(ctx, items[i], lst);
+    return interp_make_cons(ctx, interp_make_symbol(ctx, VECTOR_TAG), lst);
+}
+
+static interp_val_t* builtin_linspace(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n != 3) return interp_make_error(ctx, "linspace: expected 3 arguments (start end count)");
+    for (uint64_t i = 0; i < 3; i++) REQUIRE_NUMBER("linspace", args[i]);
+    double start = as_double(args[0]), end_val = as_double(args[1]);
+    int64_t count = (int64_t)as_double(args[2]);
+    if (count < 1) return interp_make_cons(ctx, interp_make_symbol(ctx, VECTOR_TAG), interp_make_null(ctx));
+
+    interp_val_t* items[4096];
+    int num = count > 4096 ? 4096 : (int)count;
+    for (int i = 0; i < num; i++) {
+        double t = (count == 1) ? 0 : (double)i / (count - 1);
+        items[i] = interp_make_double(ctx, start + t * (end_val - start));
+    }
+    interp_val_t* lst = interp_make_null(ctx);
+    for (int i = num - 1; i >= 0; i--) lst = interp_make_cons(ctx, items[i], lst);
+    return interp_make_cons(ctx, interp_make_symbol(ctx, VECTOR_TAG), lst);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Registration
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1601,7 +1780,21 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "vector->list", builtin_vector_to_list, 1, 1);
     reg(ctx, "list->vector", builtin_list_to_vector, 1, 1);
     reg(ctx, "vector?", builtin_vector_p, 1, 1);
-    reg(ctx, "vref", builtin_vector_ref, 2, 2);  // Eshkol tensor/vector access alias
+    reg(ctx, "vref", builtin_vector_ref, 2, 2);
+    reg(ctx, "tensor-add", builtin_tensor_add, 2, 2);
+    reg(ctx, "tensor-sub", builtin_tensor_sub, 2, 2);
+    reg(ctx, "tensor-mul", builtin_tensor_mul, 2, 2);
+    reg(ctx, "tensor-div", builtin_tensor_div, 2, 2);
+    reg(ctx, "tensor-dot", builtin_tensor_dot, 2, 2);
+    reg(ctx, "tensor-sum", builtin_tensor_sum, 1, 1);
+    reg(ctx, "tensor-mean", builtin_tensor_mean, 1, 1);
+    reg(ctx, "tensor-shape", builtin_tensor_shape, 1, 1);
+    reg(ctx, "tensor-apply", builtin_tensor_apply, 2, 2);
+    reg(ctx, "norm", builtin_norm, 1, 1);
+    reg(ctx, "zeros", builtin_zeros, 1, 1);
+    reg(ctx, "ones", builtin_ones, 1, 1);
+    reg(ctx, "arange", builtin_arange, 1, 3);
+    reg(ctx, "linspace", builtin_linspace, 3, 3);
 
     // Type conversions
     reg(ctx, "exact->inexact", builtin_exact_to_inexact, 1, 1);
