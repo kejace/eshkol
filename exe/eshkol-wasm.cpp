@@ -8,6 +8,7 @@
  */
 #include <eshkol/eshkol.h>
 #include <eshkol/llvm_backend.h>
+#include "../lib/interpreter/interpreter.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -430,6 +431,107 @@ const char* eshkol_wasm_pretty_print(const char* source) {
 WASM_EXPORT
 void eshkol_wasm_free(const char* ptr) {
     free((void*)ptr);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Interpreter API
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Create a persistent interpreter context
+WASM_EXPORT
+void* eshkol_wasm_interp_create(void) {
+    return (void*)interp_ctx_create();
+}
+
+// Destroy the interpreter context
+WASM_EXPORT
+void eshkol_wasm_interp_destroy(void* ctx_ptr) {
+    interp_ctx_destroy((interp_ctx_t*)ctx_ptr);
+}
+
+// Reset interpreter state (clear all user definitions)
+WASM_EXPORT
+void eshkol_wasm_interp_reset(void* ctx_ptr) {
+    interp_ctx_reset((interp_ctx_t*)ctx_ptr);
+}
+
+// Evaluate source code and return JSON result
+// Returns: {"value":"42","type":"integer","output":"..."}
+// Or:      {"error":"message","output":"..."}
+WASM_EXPORT
+const char* eshkol_wasm_eval(void* ctx_ptr, const char* source) {
+    if (!ctx_ptr || !source) {
+        char* r = (char*)malloc(32);
+        strcpy(r, "{\"error\":\"null argument\"}");
+        return r;
+    }
+
+    interp_ctx_t* ctx = (interp_ctx_t*)ctx_ptr;
+    ctx->error_msg = nullptr;
+    ctx->output_len = 0;
+    if (ctx->output_buf) ctx->output_buf[0] = '\0';
+
+    std::istringstream stream(source);
+    interp_val_t* result = nullptr;
+
+    while (true) {
+        eshkol_ast_t ast = eshkol_parse_next_ast_from_stream(stream);
+        if (ast.type == ESHKOL_INVALID) break;
+
+        result = interp_eval(&ast, ctx);
+        if (ctx->error_msg) break;
+    }
+
+    // Build JSON response
+    std::string json = "{";
+
+    if (ctx->error_msg) {
+        json += "\"error\":\"";
+        // Escape the error message
+        for (const char* p = ctx->error_msg; *p; p++) {
+            if (*p == '"') json += "\\\"";
+            else if (*p == '\\') json += "\\\\";
+            else if (*p == '\n') json += "\\n";
+            else json += *p;
+        }
+        json += "\"";
+    } else if (result) {
+        char* val_str = interp_val_to_string(result);
+        json += "\"value\":\"";
+        for (const char* p = val_str; *p; p++) {
+            if (*p == '"') json += "\\\"";
+            else if (*p == '\\') json += "\\\\";
+            else if (*p == '\n') json += "\\n";
+            else json += *p;
+        }
+        json += "\",\"type\":\"";
+        json += interp_val_type_name(result);
+        json += "\"";
+        free(val_str);
+    } else {
+        json += "\"value\":\"\",\"type\":\"void\"";
+    }
+
+    // Include captured output
+    if (ctx->output_len > 0) {
+        json += ",\"output\":\"";
+        for (uint64_t i = 0; i < ctx->output_len; i++) {
+            char c = ctx->output_buf[i];
+            if (c == '"') json += "\\\"";
+            else if (c == '\\') json += "\\\\";
+            else if (c == '\n') json += "\\n";
+            else if (c == '\r') json += "\\r";
+            else if (c == '\t') json += "\\t";
+            else json += c;
+        }
+        json += "\"";
+    }
+
+    json += "}";
+
+    char* out = (char*)malloc(json.size() + 1);
+    memcpy(out, json.c_str(), json.size() + 1);
+    return out;
 }
 
 } // extern "C"
