@@ -890,8 +890,11 @@ static interp_val_t* interp_ast_to_datum(const eshkol_ast_t* ast, interp_ctx_t* 
         case ESHKOL_UINT16: return interp_make_int(ctx, ast->uint16_val);
         case ESHKOL_UINT8:  return interp_make_int(ctx, ast->uint8_val);
         case ESHKOL_DOUBLE: return interp_make_double(ctx, ast->double_val);
-        case ESHKOL_STRING:
-            return interp_make_string(ctx, ast->str_val.ptr, ast->str_val.size);
+        case ESHKOL_STRING: {
+            // Parser includes null terminator in size — use strlen for actual length
+            uint64_t slen = ast->str_val.ptr ? strlen(ast->str_val.ptr) : 0;
+            return interp_make_string(ctx, ast->str_val.ptr, slen);
+        }
         case ESHKOL_BOOL: return interp_make_bool(ctx, ast->int64_val != 0);
         case ESHKOL_CHAR: return interp_make_char(ctx, (char)ast->int64_val);
         case ESHKOL_NULL: return interp_make_null(ctx);
@@ -923,8 +926,11 @@ interp_val_t* interp_eval(const eshkol_ast_t* ast, interp_ctx_t* ctx) {
         case ESHKOL_UINT16: return interp_make_int(ctx, ast->uint16_val);
         case ESHKOL_UINT8:  return interp_make_int(ctx, ast->uint8_val);
         case ESHKOL_DOUBLE: return interp_make_double(ctx, ast->double_val);
-        case ESHKOL_STRING:
-            return interp_make_string(ctx, ast->str_val.ptr, ast->str_val.size);
+        case ESHKOL_STRING: {
+            // Parser includes null terminator in size — use strlen for actual length
+            uint64_t slen = ast->str_val.ptr ? strlen(ast->str_val.ptr) : 0;
+            return interp_make_string(ctx, ast->str_val.ptr, slen);
+        }
         case ESHKOL_BOOL:
             return interp_make_bool(ctx, ast->int64_val != 0);
         case ESHKOL_CHAR:

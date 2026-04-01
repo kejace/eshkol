@@ -492,28 +492,45 @@ const char* eshkol_wasm_eval(void* ctx_ptr, const char* source) {
         if (ctx->error_msg) break;
     }
 
-    // Build JSON response
-    std::string json = "{";
+    // Helper to JSON-escape a string into a buffer
+    auto json_escape = [](const char* src, uint64_t len, std::string& dst) {
+        for (uint64_t i = 0; i < len; i++) {
+            char c = src[i];
+            switch (c) {
+                case '"':  dst += "\\\""; break;
+                case '\\': dst += "\\\\"; break;
+                case '\n': dst += "\\n"; break;
+                case '\r': dst += "\\r"; break;
+                case '\t': dst += "\\t"; break;
+                default:
+                    if ((unsigned char)c < 0x20) {
+                        char hex[8];
+                        snprintf(hex, sizeof(hex), "\\u%04x", (unsigned char)c);
+                        dst += hex;
+                    } else {
+                        dst += c;
+                    }
+                    break;
+            }
+        }
+    };
+
+    // Pre-estimate output size to avoid repeated reallocations
+    uint64_t est_size = 128;
+    if (ctx->output_len > 0) est_size += ctx->output_len * 2;
+
+    std::string json;
+    json.reserve(est_size);
+    json = "{";
 
     if (ctx->error_msg) {
         json += "\"error\":\"";
-        // Escape the error message
-        for (const char* p = ctx->error_msg; *p; p++) {
-            if (*p == '"') json += "\\\"";
-            else if (*p == '\\') json += "\\\\";
-            else if (*p == '\n') json += "\\n";
-            else json += *p;
-        }
+        json_escape(ctx->error_msg, strlen(ctx->error_msg), json);
         json += "\"";
     } else if (result) {
         char* val_str = interp_val_to_string(result);
         json += "\"value\":\"";
-        for (const char* p = val_str; *p; p++) {
-            if (*p == '"') json += "\\\"";
-            else if (*p == '\\') json += "\\\\";
-            else if (*p == '\n') json += "\\n";
-            else json += *p;
-        }
+        json_escape(val_str, strlen(val_str), json);
         json += "\",\"type\":\"";
         json += interp_val_type_name(result);
         json += "\"";
@@ -525,21 +542,18 @@ const char* eshkol_wasm_eval(void* ctx_ptr, const char* source) {
     // Include captured output
     if (ctx->output_len > 0) {
         json += ",\"output\":\"";
-        for (uint64_t i = 0; i < ctx->output_len; i++) {
-            char c = ctx->output_buf[i];
-            if (c == '"') json += "\\\"";
-            else if (c == '\\') json += "\\\\";
-            else if (c == '\n') json += "\\n";
-            else if (c == '\r') json += "\\r";
-            else if (c == '\t') json += "\\t";
-            else json += c;
-        }
+        json_escape(ctx->output_buf, ctx->output_len, json);
         json += "\"";
     }
 
     json += "}";
 
     char* out = (char*)malloc(json.size() + 1);
+    if (!out) {
+        // Fallback for allocation failure
+        static char oom[] = "{\"error\":\"out of memory building response\"}";
+        return oom;
+    }
     memcpy(out, json.c_str(), json.size() + 1);
     return out;
 }
