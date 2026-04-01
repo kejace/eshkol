@@ -829,6 +829,55 @@ static interp_val_t* builtin_cdddr(interp_val_t** args, uint64_t n, interp_ctx_t
     return v;
 }
 
+// Generic c*r accessor — path is a string like "addr" for caddr
+static interp_val_t* cxr(const char* name, const char* path, interp_val_t* v, interp_ctx_t* ctx) {
+    for (int i = (int)strlen(path) - 1; i >= 0; i--) {
+        if (!v || v->type != INTERP_VAL_CONS) return interp_make_error(ctx, name);
+        v = (path[i] == 'a') ? v->cons.car : v->cons.cdr;
+    }
+    return v;
+}
+
+static interp_val_t* builtin_cadddr(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("cadddr", 1); return cxr("cadddr", "adddr", args[0], ctx);
+}
+
+static interp_val_t* builtin_caddddr(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("caddddr", 1); return cxr("caddddr", "addddr", args[0], ctx);
+}
+
+static interp_val_t* builtin_acons(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n != 3) return interp_make_error(ctx, "acons: expected 3 arguments");
+    return interp_make_cons(ctx, interp_make_cons(ctx, args[0], args[1]), args[2]);
+}
+
+static interp_val_t* builtin_unzip(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("unzip", 1);
+    interp_val_t* firsts[4096], *seconds[4096];
+    int count = 0;
+    interp_val_t* lst = args[0];
+    while (lst && lst->type == INTERP_VAL_CONS && count < 4096) {
+        interp_val_t* pair = lst->cons.car;
+        if (pair && pair->type == INTERP_VAL_CONS) {
+            firsts[count] = pair->cons.car;
+            seconds[count] = (pair->cons.cdr && pair->cons.cdr->type == INTERP_VAL_CONS) ?
+                pair->cons.cdr->cons.car : pair->cons.cdr;
+        } else {
+            firsts[count] = pair;
+            seconds[count] = interp_make_null(ctx);
+        }
+        count++;
+        lst = lst->cons.cdr;
+    }
+    interp_val_t* first_list = interp_make_null(ctx);
+    interp_val_t* second_list = interp_make_null(ctx);
+    for (int i = count - 1; i >= 0; i--) {
+        first_list = interp_make_cons(ctx, firsts[i], first_list);
+        second_list = interp_make_cons(ctx, seconds[i], second_list);
+    }
+    return interp_make_cons(ctx, first_list, interp_make_cons(ctx, second_list, interp_make_null(ctx)));
+}
+
 static interp_val_t* builtin_last(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
     REQUIRE_ARGS("last", 1);
     const interp_val_t* cur = args[0];
@@ -923,15 +972,22 @@ static interp_val_t* builtin_reduce(interp_val_t** args, uint64_t n, interp_ctx_
 
 static interp_val_t* builtin_remove(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
     REQUIRE_ARGS("remove", 2);
-    interp_val_t* func = args[0];
+    interp_val_t* first = args[0];
     interp_val_t* lst = args[1];
+    bool is_pred = (first->type == INTERP_VAL_CLOSURE || first->type == INTERP_VAL_BUILTIN);
     interp_val_t* items[4096];
     int count = 0;
     while (lst && lst->type == INTERP_VAL_CONS && count < 4096) {
-        interp_val_t* arg = lst->cons.car;
-        interp_val_t* test = interp_apply(func, &arg, 1, ctx);
-        if (ctx->error_msg) return test;
-        if (!interp_val_is_truthy(test)) items[count++] = arg;
+        interp_val_t* elem = lst->cons.car;
+        bool should_remove;
+        if (is_pred) {
+            interp_val_t* test = interp_apply(first, &elem, 1, ctx);
+            if (ctx->error_msg) return test;
+            should_remove = interp_val_is_truthy(test);
+        } else {
+            should_remove = vals_equal(first, elem);
+        }
+        if (!should_remove) items[count++] = elem;
         lst = lst->cons.cdr;
     }
     interp_val_t* result = interp_make_null(ctx);
@@ -1033,6 +1089,32 @@ static interp_val_t* builtin_unique(interp_val_t** args, uint64_t n, interp_ctx_
     interp_val_t* result = interp_make_null(ctx);
     for (int i = count - 1; i >= 0; i--) result = interp_make_cons(ctx, items[i], result);
     return result;
+}
+
+static interp_val_t* builtin_any(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("any", 2);
+    interp_val_t* func = args[0];
+    interp_val_t* lst = args[1];
+    while (lst && lst->type == INTERP_VAL_CONS) {
+        interp_val_t* test = interp_apply(func, &lst->cons.car, 1, ctx);
+        if (ctx->error_msg) return test;
+        if (interp_val_is_truthy(test)) return interp_make_bool(ctx, true);
+        lst = lst->cons.cdr;
+    }
+    return interp_make_bool(ctx, false);
+}
+
+static interp_val_t* builtin_every(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("every", 2);
+    interp_val_t* func = args[0];
+    interp_val_t* lst = args[1];
+    while (lst && lst->type == INTERP_VAL_CONS) {
+        interp_val_t* test = interp_apply(func, &lst->cons.car, 1, ctx);
+        if (ctx->error_msg) return test;
+        if (!interp_val_is_truthy(test)) return interp_make_bool(ctx, false);
+        lst = lst->cons.cdr;
+    }
+    return interp_make_bool(ctx, true);
 }
 
 static interp_val_t* builtin_sort(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
@@ -1749,6 +1831,10 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "fabs", builtin_abs, 1, 1);
     reg(ctx, "min", builtin_min, 1, -1);
     reg(ctx, "max", builtin_max, 1, -1);
+    reg(ctx, "add", builtin_add, 0, -1);
+    reg(ctx, "sub", builtin_sub, 1, -1);
+    reg(ctx, "mul", builtin_mul, 0, -1);
+    reg(ctx, "div", builtin_div, 1, -1);
 
     // Comparison
     reg(ctx, "=", builtin_eq, 2, 2);
@@ -1831,6 +1917,8 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "foldl", builtin_reduce, 3, 3);
     reg(ctx, "remove", builtin_remove, 2, 2);
     reg(ctx, "sort", builtin_sort, 1, 2);
+    reg(ctx, "any", builtin_any, 2, 2);
+    reg(ctx, "every", builtin_every, 2, 2);
     reg(ctx, "find", builtin_find, 2, 2);
     reg(ctx, "split-at", builtin_split_at, 2, 2);
     reg(ctx, "fold-right", builtin_fold_right, 3, 3);
@@ -1838,6 +1926,16 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "last-pair", builtin_last_pair, 1, 1);
     reg(ctx, "partition", builtin_partition, 2, 2);
     reg(ctx, "unique", builtin_unique, 1, 1);
+    reg(ctx, "map2", builtin_map, 3, -1);
+    reg(ctx, "cadddr", builtin_cadddr, 1, 1);
+    reg(ctx, "caddddr", builtin_caddddr, 1, 1);
+    reg(ctx, "acons", builtin_acons, 3, 3);
+    reg(ctx, "unzip", builtin_unzip, 1, 1);
+    reg(ctx, "remq", builtin_remove, 2, 2);
+    reg(ctx, "remv", builtin_remove, 2, 2);
+    reg(ctx, "first", builtin_car, 1, 1);
+    reg(ctx, "second", builtin_cadr, 1, 1);
+    reg(ctx, "third", builtin_caddr, 1, 1);
 
     // I/O
     reg(ctx, "display", builtin_display, 1, 1);
