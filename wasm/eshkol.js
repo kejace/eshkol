@@ -17,8 +17,14 @@ let moduleInstance = null;
  * @returns {Promise<object>} The eshkol API object
  */
 export async function init() {
-    // Dynamic import of the Emscripten-generated module
-    const createModule = (await import('./eshkol-wasm.js')).default;
+    // Load the Emscripten-generated module
+    // Emscripten with MODULARIZE=1 exposes a factory function.
+    // In browser context it's a global (var EshkolCompiler), in Node it's module.exports.
+    const imported = await import('./eshkol-wasm.js');
+    const createModule = imported.default || imported.EshkolCompiler || (typeof EshkolCompiler !== 'undefined' ? EshkolCompiler : undefined);
+    if (typeof createModule !== 'function') {
+        throw new Error('Failed to load Emscripten module — EshkolCompiler factory not found');
+    }
     moduleInstance = await createModule();
 
     return {

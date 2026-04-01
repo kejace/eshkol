@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Eshkol Playground</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/edit/matchbrackets.min.css">
 <style>
   :root {
     --bg: #1e1e2e;
@@ -18,6 +20,7 @@
     --orange: #fab387;
     --yellow: #f9e2af;
     --mauve: #cba6f7;
+    --teal: #94e2d5;
     --border: #313244;
     --radius: 6px;
   }
@@ -91,24 +94,75 @@
     border-right: 1px solid var(--border);
   }
 
-  #editor {
+  .editor-wrap {
     flex: 1;
-    width: 100%;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  /* CodeMirror dark theme overrides */
+  .CodeMirror {
+    height: 100%;
     background: var(--bg-editor);
     color: var(--text);
-    border: none;
-    outline: none;
-    resize: none;
-    padding: 16px;
     font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
     font-size: 14px;
     line-height: 1.6;
-    tab-size: 2;
   }
 
-  #editor::placeholder {
+  .CodeMirror-gutters {
+    background: var(--bg-editor);
+    border-right: 1px solid var(--border);
+  }
+
+  .CodeMirror-linenumber {
     color: var(--text-dim);
   }
+
+  .CodeMirror-cursor {
+    border-left-color: var(--text);
+  }
+
+  .CodeMirror-selected {
+    background: #313244 !important;
+  }
+
+  .CodeMirror-focused .CodeMirror-selected {
+    background: #45475a !important;
+  }
+
+  .CodeMirror-activeline-background {
+    background: #181825;
+  }
+
+  .CodeMirror-matchingbracket {
+    color: var(--green) !important;
+    font-weight: bold;
+    text-decoration: underline;
+  }
+
+  .CodeMirror-nonmatchingbracket {
+    color: var(--red) !important;
+  }
+
+  /* Scheme syntax colors */
+  .cm-s-eshkol .cm-keyword { color: var(--mauve); }
+  .cm-s-eshkol .cm-builtin { color: var(--accent); }
+  .cm-s-eshkol .cm-atom { color: var(--orange); }
+  .cm-s-eshkol .cm-number { color: var(--orange); }
+  .cm-s-eshkol .cm-string { color: var(--green); }
+  .cm-s-eshkol .cm-string-2 { color: var(--green); }
+  .cm-s-eshkol .cm-variable { color: var(--text); }
+  .cm-s-eshkol .cm-variable-2 { color: var(--teal); }
+  .cm-s-eshkol .cm-def { color: var(--accent); }
+  .cm-s-eshkol .cm-comment { color: var(--text-dim); font-style: italic; }
+  .cm-s-eshkol .cm-bracket { color: var(--text-dim); }
+  .cm-s-eshkol .cm-tag { color: var(--red); }
+  .cm-s-eshkol .cm-link { color: var(--accent); }
+  .cm-s-eshkol .cm-error { color: var(--red); }
+  .cm-s-eshkol .cm-meta { color: var(--yellow); }
+  .cm-s-eshkol .cm-qualifier { color: var(--teal); }
+  .cm-s-eshkol .cm-property { color: var(--teal); }
 
   .actions {
     display: flex;
@@ -235,7 +289,8 @@
       <span>Editor</span>
       <span><kbd>Ctrl+Enter</kbd> Parse &nbsp; <kbd>Ctrl+Shift+Enter</kbd> Pretty Print</span>
     </div>
-    <textarea id="editor" spellcheck="false" placeholder="Type Eshkol code here...">;; Eshkol Playground
+    <div class="editor-wrap">
+      <textarea id="editor">;; Eshkol Playground
 ;; Click "Parse" to see the AST, or "Pretty Print" for formatted output.
 
 (define pi 3.14159265)
@@ -251,6 +306,7 @@
       (area (lambda (r) (* pi (square r)))))
   (area radius))
 </textarea>
+    </div>
   </div>
 
   <div class="panel">
@@ -273,53 +329,60 @@
   <div id="timing"></div>
 </footer>
 
-<script type="module">
-  const editor = document.getElementById('editor');
-  const output = document.getElementById('output');
-  const status = document.getElementById('status');
-  const statusDot = document.getElementById('status-dot');
-  const timing = document.getElementById('timing');
-  const btnParse = document.getElementById('btn-parse');
-  const btnPretty = document.getElementById('btn-pretty');
-  const btnClear = document.getElementById('btn-clear');
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/scheme/scheme.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/edit/matchbrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/edit/closebrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/selection/active-line.min.js"></script>
+<script src="wasm/eshkol-wasm.js"></script>
+<script>
+  // --- CodeMirror setup ---
 
-  let eshkol = null;
-
-  // --- Editor helpers ---
-
-  editor.addEventListener('keydown', (e) => {
-    // Tab inserts 2 spaces
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const start = editor.selectionStart;
-      const end = editor.selectionEnd;
-      editor.value = editor.value.substring(0, start) + '  ' + editor.value.substring(end);
-      editor.selectionStart = editor.selectionEnd = start + 2;
-    }
-
-    // Ctrl+Enter = Parse
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-      e.preventDefault();
-      if (eshkol) runParse();
-    }
-
-    // Ctrl+Shift+Enter = Pretty Print
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey) {
-      e.preventDefault();
-      if (eshkol) runPrettyPrint();
+  var cm = CodeMirror.fromTextArea(document.getElementById('editor'), {
+    mode: 'scheme',
+    theme: 'eshkol',
+    lineNumbers: true,
+    matchBrackets: true,
+    autoCloseBrackets: true,
+    styleActiveLine: true,
+    indentUnit: 2,
+    tabSize: 2,
+    indentWithTabs: false,
+    extraKeys: {
+      'Ctrl-Enter': function() { if (mod) runParse(); },
+      'Cmd-Enter': function() { if (mod) runParse(); },
+      'Ctrl-Shift-Enter': function() { if (mod) runPrettyPrint(); },
+      'Cmd-Shift-Enter': function() { if (mod) runPrettyPrint(); },
+      'Tab': function(cm) {
+        if (cm.somethingSelected()) {
+          cm.indentSelection('add');
+        } else {
+          cm.replaceSelection('  ', 'end');
+        }
+      }
     }
   });
+
+  var output = document.getElementById('output');
+  var status = document.getElementById('status');
+  var statusDot = document.getElementById('status-dot');
+  var timing = document.getElementById('timing');
+  var btnParse = document.getElementById('btn-parse');
+  var btnPretty = document.getElementById('btn-pretty');
+  var btnClear = document.getElementById('btn-clear');
+
+  var mod = null;
 
   // --- JSON syntax highlighting ---
 
   function highlightJSON(json) {
-    const str = JSON.stringify(json, null, 2);
+    var str = JSON.stringify(json, null, 2);
     return str.replace(
       /("(?:\\.|[^"\\])*")\s*:/g,
       '<span class="json-key">$1</span>:'
     ).replace(
       /:\s*("(?:\\.|[^"\\])*")/g,
-      (match, val) => ': <span class="json-string">' + val + '</span>'
+      function(match, val) { return ': <span class="json-string">' + val + '</span>'; }
     ).replace(
       /:\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
       ': <span class="json-number">$1</span>'
@@ -334,13 +397,21 @@
 
   // --- Actions ---
 
+  function callWasm(name, source) {
+    var ptr = mod.ccall(name, 'number', ['string'], [source]);
+    var str = mod.UTF8ToString(ptr);
+    mod.ccall('eshkol_wasm_free', null, ['number'], [ptr]);
+    return str;
+  }
+
   function runParse() {
-    const source = editor.value;
+    var source = cm.getValue();
     output.className = '';
     try {
-      const t0 = performance.now();
-      const result = eshkol.parse(source);
-      const elapsed = (performance.now() - t0).toFixed(1);
+      var t0 = performance.now();
+      var json = callWasm('eshkol_wasm_parse', source);
+      var result = JSON.parse(json);
+      var elapsed = (performance.now() - t0).toFixed(1);
 
       if (result.error) {
         output.className = 'error';
@@ -348,7 +419,7 @@
         timing.textContent = '';
       } else {
         output.innerHTML = highlightJSON(result);
-        timing.textContent = `Parsed in ${elapsed}ms \u2014 ${result.count} expression${result.count !== 1 ? 's' : ''}`;
+        timing.textContent = 'Parsed in ' + elapsed + 'ms \u2014 ' + result.count + ' expression' + (result.count !== 1 ? 's' : '');
       }
       btnParse.classList.add('active');
       btnPretty.classList.remove('active');
@@ -360,15 +431,15 @@
   }
 
   function runPrettyPrint() {
-    const source = editor.value;
+    var source = cm.getValue();
     output.className = '';
     try {
-      const t0 = performance.now();
-      const result = eshkol.prettyPrint(source);
-      const elapsed = (performance.now() - t0).toFixed(1);
+      var t0 = performance.now();
+      var result = callWasm('eshkol_wasm_pretty_print', source);
+      var elapsed = (performance.now() - t0).toFixed(1);
 
       output.textContent = result;
-      timing.textContent = `Pretty-printed in ${elapsed}ms`;
+      timing.textContent = 'Pretty-printed in ' + elapsed + 'ms';
       btnPretty.classList.add('active');
       btnParse.classList.remove('active');
     } catch (e) {
@@ -380,7 +451,7 @@
 
   btnParse.addEventListener('click', runParse);
   btnPretty.addEventListener('click', runPrettyPrint);
-  btnClear.addEventListener('click', () => {
+  btnClear.addEventListener('click', function() {
     output.textContent = '';
     output.className = '';
     output.innerHTML = '';
@@ -391,22 +462,20 @@
 
   // --- Init ---
 
-  try {
-    const { init } = await import('./wasm/eshkol.js');
-    const t0 = performance.now();
-    eshkol = await init();
-    const elapsed = (performance.now() - t0).toFixed(0);
-
-    status.textContent = `Ready (loaded in ${elapsed}ms)`;
+  var t0 = performance.now();
+  EshkolCompiler().then(function(instance) {
+    mod = instance;
+    var elapsed = (performance.now() - t0).toFixed(0);
+    status.textContent = 'Ready (loaded in ' + elapsed + 'ms)';
     statusDot.className = 'ready';
     btnParse.disabled = false;
     btnPretty.disabled = false;
     btnClear.disabled = false;
-  } catch (e) {
+  }).catch(function(e) {
     status.textContent = 'Failed to load: ' + e.message;
     statusDot.className = 'error';
     console.error('Eshkol init failed:', e);
-  }
+  });
 </script>
 
 </body>
