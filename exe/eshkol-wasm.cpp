@@ -455,10 +455,14 @@ void eshkol_wasm_interp_reset(void* ctx_ptr) {
     interp_ctx_reset((interp_ctx_t*)ctx_ptr);
 }
 
-// Set maximum recursion depth
+// Set maximum recursion depth (capped at 50000 to avoid stack overflow)
 WASM_EXPORT
 void eshkol_wasm_interp_set_recursion_limit(void* ctx_ptr, int limit) {
-    if (ctx_ptr) ((interp_ctx_t*)ctx_ptr)->max_recursion_depth = limit;
+    if (ctx_ptr) {
+        if (limit > 50000) limit = 50000;
+        if (limit < 10) limit = 10;
+        ((interp_ctx_t*)ctx_ptr)->max_recursion_depth = limit;
+    }
 }
 
 // Evaluate source code and return JSON result
