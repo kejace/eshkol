@@ -325,7 +325,7 @@ static interp_frame_t* setup_closure_frame(interp_val_t* func, interp_val_t** ar
     interp_frame_t* call_frame = interp_frame_create(cl.env);
 
     uint64_t fixed = cl.num_params;
-    if (cl.is_variadic && fixed > 0) fixed--;
+    // num_params is the count of fixed params (rest param is separate)
 
     for (uint64_t i = 0; i < fixed && i < num_args; i++) {
         if (cl.params && cl.params[i].type == ESHKOL_VAR) {
@@ -466,7 +466,7 @@ interp_val_t* interp_eval_op(const eshkol_operations_t* op, interp_ctx_t* ctx) {
         const auto& d = op->define_op;
         interp_val_t* val;
 
-        if (d.is_function && d.parameters) {
+        if (d.is_function) {
             // (define (name params...) body)
             auto* closure = alloc_val(ctx);
             closure->type = INTERP_VAL_CLOSURE;
@@ -506,17 +506,31 @@ interp_val_t* interp_eval_op(const eshkol_operations_t* op, interp_ctx_t* ctx) {
     case ESHKOL_CALL_OP: {
         const auto& c = op->call_op;
 
-        // Special form: "if" stored as CALL_OP with func name "if"
-        if (c.func && c.func->type == ESHKOL_VAR && c.func->variable.id &&
-            strcmp(c.func->variable.id, "if") == 0 && c.num_vars >= 2) {
-            interp_val_t* cond = interp_eval(&c.variables[0], ctx);
-            if (ctx->error_msg) return cond;
-            if (interp_val_is_truthy(cond)) {
-                return interp_eval_tail(&c.variables[1], ctx);
-            } else if (c.num_vars >= 3) {
-                return interp_eval_tail(&c.variables[2], ctx);
+        // Special forms stored as CALL_OP with func name
+        if (c.func && c.func->type == ESHKOL_VAR && c.func->variable.id) {
+            const char* fname = c.func->variable.id;
+
+            // if
+            if (strcmp(fname, "if") == 0 && c.num_vars >= 2) {
+                interp_val_t* cond = interp_eval(&c.variables[0], ctx);
+                if (ctx->error_msg) return cond;
+                if (interp_val_is_truthy(cond)) {
+                    return interp_eval_tail(&c.variables[1], ctx);
+                } else if (c.num_vars >= 3) {
+                    return interp_eval_tail(&c.variables[2], ctx);
+                }
+                return interp_make_void(ctx);
             }
-            return interp_make_void(ctx);
+
+            // begin — evaluate sequentially (defines need this)
+            if (strcmp(fname, "begin") == 0) {
+                if (c.num_vars == 0) return interp_make_void(ctx);
+                for (uint64_t i = 0; i + 1 < c.num_vars; i++) {
+                    interp_val_t* r = interp_eval(&c.variables[i], ctx);
+                    if (ctx->error_msg) return r;
+                }
+                return interp_eval_tail(&c.variables[c.num_vars - 1], ctx);
+            }
         }
 
         // Regular function call — return as tail call thunk
@@ -903,6 +917,29 @@ static interp_val_t* interp_ast_to_datum(const eshkol_ast_t* ast, interp_ctx_t* 
             return interp_make_cons(ctx,
                 interp_ast_to_datum(ast->cons_cell.car, ctx),
                 interp_ast_to_datum(ast->cons_cell.cdr, ctx));
+        case ESHKOL_OP: {
+            const auto& op = ast->operation;
+            // Quoted list: (list elem1 elem2 ...) stored as CALL_OP(func="list", args=[...])
+            if (op.op == ESHKOL_CALL_OP && op.call_op.func &&
+                op.call_op.func->type == ESHKOL_VAR &&
+                strcmp(op.call_op.func->variable.id, "list") == 0) {
+                interp_val_t* result = interp_make_null(ctx);
+                for (int64_t i = (int64_t)op.call_op.num_vars - 1; i >= 0; i--) {
+                    result = interp_make_cons(ctx,
+                        interp_ast_to_datum(&op.call_op.variables[i], ctx), result);
+                }
+                return result;
+            }
+            // Nested quote
+            if (op.op == ESHKOL_QUOTE_OP && op.call_op.num_vars >= 1) {
+                return interp_make_cons(ctx,
+                    interp_make_symbol(ctx, "quote"),
+                    interp_make_cons(ctx,
+                        interp_ast_to_datum(&op.call_op.variables[0], ctx),
+                        interp_make_null(ctx)));
+            }
+            return interp_make_symbol(ctx, "#<ast>");
+        }
         default:
             return interp_make_symbol(ctx, "#<ast>");
     }

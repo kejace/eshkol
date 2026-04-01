@@ -340,17 +340,35 @@ static interp_val_t* builtin_reverse(interp_val_t** args, uint64_t n, interp_ctx
 static interp_val_t* builtin_map(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
     if (n < 2) return interp_make_error(ctx, "map: expected at least 2 arguments");
     interp_val_t* func = args[0];
-    interp_val_t* lst = args[1];
+    uint64_t num_lists = n - 1;
 
-    // Collect results
+    // Multi-list map: (map f list1 list2 ...)
+    interp_val_t* lists[64];
+    for (uint64_t i = 0; i < num_lists && i < 64; i++) lists[i] = args[i + 1];
+
     interp_val_t* items[4096];
     int count = 0;
-    while (lst && lst->type == INTERP_VAL_CONS && count < 4096) {
-        interp_val_t* arg = lst->cons.car;
-        items[count] = interp_apply(func, &arg, 1, ctx);
+
+    while (count < 4096) {
+        // Check if any list is exhausted
+        bool done = false;
+        for (uint64_t i = 0; i < num_lists; i++) {
+            if (!lists[i] || lists[i]->type != INTERP_VAL_CONS) { done = true; break; }
+        }
+        if (done) break;
+
+        // Collect car of each list as arguments
+        interp_val_t* call_args[64];
+        for (uint64_t i = 0; i < num_lists; i++) {
+            call_args[i] = lists[i]->cons.car;
+        }
+
+        items[count] = interp_apply(func, call_args, num_lists, ctx);
         if (ctx->error_msg) return items[count];
         count++;
-        lst = lst->cons.cdr;
+
+        // Advance all lists
+        for (uint64_t i = 0; i < num_lists; i++) lists[i] = lists[i]->cons.cdr;
     }
 
     interp_val_t* result = interp_make_null(ctx);
@@ -650,12 +668,21 @@ static interp_val_t* builtin_list_tail(interp_val_t** args, uint64_t n, interp_c
 static interp_val_t* builtin_for_each(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
     if (n < 2) return interp_make_error(ctx, "for-each: expected at least 2 arguments");
     interp_val_t* func = args[0];
-    interp_val_t* lst = args[1];
-    while (lst && lst->type == INTERP_VAL_CONS) {
-        interp_val_t* arg = lst->cons.car;
-        interp_apply(func, &arg, 1, ctx);
+    uint64_t num_lists = n - 1;
+    interp_val_t* lists[64];
+    for (uint64_t i = 0; i < num_lists && i < 64; i++) lists[i] = args[i + 1];
+
+    while (true) {
+        bool done = false;
+        for (uint64_t i = 0; i < num_lists; i++) {
+            if (!lists[i] || lists[i]->type != INTERP_VAL_CONS) { done = true; break; }
+        }
+        if (done) break;
+        interp_val_t* call_args[64];
+        for (uint64_t i = 0; i < num_lists; i++) call_args[i] = lists[i]->cons.car;
+        interp_apply(func, call_args, num_lists, ctx);
         if (ctx->error_msg) return interp_make_error(ctx, ctx->error_msg);
-        lst = lst->cons.cdr;
+        for (uint64_t i = 0; i < num_lists; i++) lists[i] = lists[i]->cons.cdr;
     }
     return interp_make_void(ctx);
 }
@@ -905,6 +932,102 @@ static interp_val_t* builtin_remove(interp_val_t** args, uint64_t n, interp_ctx_
         interp_val_t* test = interp_apply(func, &arg, 1, ctx);
         if (ctx->error_msg) return test;
         if (!interp_val_is_truthy(test)) items[count++] = arg;
+        lst = lst->cons.cdr;
+    }
+    interp_val_t* result = interp_make_null(ctx);
+    for (int i = count - 1; i >= 0; i--) result = interp_make_cons(ctx, items[i], result);
+    return result;
+}
+
+static interp_val_t* builtin_find(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("find", 2);
+    interp_val_t* func = args[0];
+    interp_val_t* lst = args[1];
+    while (lst && lst->type == INTERP_VAL_CONS) {
+        interp_val_t* test = interp_apply(func, &lst->cons.car, 1, ctx);
+        if (ctx->error_msg) return test;
+        if (interp_val_is_truthy(test)) return lst->cons.car;
+        lst = lst->cons.cdr;
+    }
+    return interp_make_bool(ctx, false);
+}
+
+static interp_val_t* builtin_split_at(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("split-at", 2); REQUIRE_NUMBER("split-at", args[1]);
+    int64_t idx = (int64_t)as_double(args[1]);
+    interp_val_t* items[4096];
+    int count = 0;
+    interp_val_t* cur = args[0];
+    while (cur && cur->type == INTERP_VAL_CONS && count < idx && count < 4096) {
+        items[count++] = cur->cons.car;
+        cur = cur->cons.cdr;
+    }
+    interp_val_t* left = interp_make_null(ctx);
+    for (int i = count - 1; i >= 0; i--) left = interp_make_cons(ctx, items[i], left);
+    // Return (left . right) pair
+    return interp_make_cons(ctx, left, cur ? cur : interp_make_null(ctx));
+}
+
+static interp_val_t* builtin_fold_right(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n != 3) return interp_make_error(ctx, "fold-right: expected 3 arguments (func init list)");
+    interp_val_t* func = args[0];
+    interp_val_t* init = args[1];
+    interp_val_t* lst = args[2];
+    // Collect list elements, then fold from right
+    interp_val_t* elems[4096];
+    int count = 0;
+    while (lst && lst->type == INTERP_VAL_CONS && count < 4096) {
+        elems[count++] = lst->cons.car;
+        lst = lst->cons.cdr;
+    }
+    interp_val_t* acc = init;
+    for (int i = count - 1; i >= 0; i--) {
+        interp_val_t* call_args[2] = {elems[i], acc};
+        acc = interp_apply(func, call_args, 2, ctx);
+        if (ctx->error_msg) return acc;
+    }
+    return acc;
+}
+
+static interp_val_t* builtin_last_pair(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("last-pair", 1);
+    interp_val_t* cur = args[0];
+    if (!cur || cur->type != INTERP_VAL_CONS) return interp_make_error(ctx, "last-pair: not a pair");
+    while (cur->cons.cdr && cur->cons.cdr->type == INTERP_VAL_CONS) cur = cur->cons.cdr;
+    return cur;
+}
+
+static interp_val_t* builtin_partition(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("partition", 2);
+    interp_val_t* func = args[0];
+    interp_val_t* lst = args[1];
+    interp_val_t* yes_items[4096], *no_items[4096];
+    int yc = 0, nc = 0;
+    while (lst && lst->type == INTERP_VAL_CONS) {
+        interp_val_t* test = interp_apply(func, &lst->cons.car, 1, ctx);
+        if (ctx->error_msg) return test;
+        if (interp_val_is_truthy(test)) yes_items[yc++] = lst->cons.car;
+        else no_items[nc++] = lst->cons.car;
+        lst = lst->cons.cdr;
+    }
+    interp_val_t* yes_list = interp_make_null(ctx);
+    for (int i = yc - 1; i >= 0; i--) yes_list = interp_make_cons(ctx, yes_items[i], yes_list);
+    interp_val_t* no_list = interp_make_null(ctx);
+    for (int i = nc - 1; i >= 0; i--) no_list = interp_make_cons(ctx, no_items[i], no_list);
+    return interp_make_cons(ctx, yes_list, no_list);
+}
+
+static interp_val_t* builtin_unique(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("unique", 1);
+    interp_val_t* items[4096];
+    int count = 0;
+    interp_val_t* lst = args[0];
+    while (lst && lst->type == INTERP_VAL_CONS && count < 4096) {
+        bool dup = false;
+        for (int i = 0; i < count; i++) {
+            if (vals_equal(items[i], lst->cons.car)) { dup = true; break; }
+        }
+        if (!dup) items[count++] = lst->cons.car;
         lst = lst->cons.cdr;
     }
     interp_val_t* result = interp_make_null(ctx);
@@ -1675,9 +1798,9 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "reverse", builtin_reverse, 1, 1);
     reg(ctx, "list-ref", builtin_list_ref, 2, 2);
     reg(ctx, "list-tail", builtin_list_tail, 2, 2);
-    reg(ctx, "map", builtin_map, 2, 2);
+    reg(ctx, "map", builtin_map, 2, -1);
     reg(ctx, "filter", builtin_filter, 2, 2);
-    reg(ctx, "for-each", builtin_for_each, 2, 2);
+    reg(ctx, "for-each", builtin_for_each, 2, -1);
     reg(ctx, "apply", builtin_apply, 2, -1);
     reg(ctx, "assoc", builtin_assoc, 2, 2);
     reg(ctx, "assv", builtin_assoc, 2, 2);
@@ -1708,6 +1831,13 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "foldl", builtin_reduce, 3, 3);
     reg(ctx, "remove", builtin_remove, 2, 2);
     reg(ctx, "sort", builtin_sort, 1, 2);
+    reg(ctx, "find", builtin_find, 2, 2);
+    reg(ctx, "split-at", builtin_split_at, 2, 2);
+    reg(ctx, "fold-right", builtin_fold_right, 3, 3);
+    reg(ctx, "foldr", builtin_fold_right, 3, 3);
+    reg(ctx, "last-pair", builtin_last_pair, 1, 1);
+    reg(ctx, "partition", builtin_partition, 2, 2);
+    reg(ctx, "unique", builtin_unique, 1, 1);
 
     // I/O
     reg(ctx, "display", builtin_display, 1, 1);
@@ -1807,6 +1937,7 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "error", builtin_error, 0, -1);
     reg(ctx, "begin", builtin_begin, 0, -1);
     reg(ctx, "identity", builtin_identity, 1, 1);
+    reg(ctx, "print", builtin_display, 1, 1);  // alias
     reg(ctx, "type-of", builtin_type_of, 1, 1);
     reg(ctx, "random", builtin_random, 0, 1);
     reg(ctx, "current-seconds", builtin_current_seconds, 0, 0);
