@@ -369,7 +369,7 @@
   <div class="panel">
     <div class="panel-header">
       <span>Editor</span>
-      <span><kbd>Ctrl+Enter</kbd> Parse &nbsp; <kbd>Ctrl+Shift+Enter</kbd> Pretty Print</span>
+      <span><kbd>Ctrl+Enter</kbd> Run &nbsp; <kbd>Ctrl+Shift+Enter</kbd> Pretty Print</span>
     </div>
     <div class="editor-wrap">
       <textarea id="editor">;; Eshkol Playground
@@ -395,6 +395,7 @@
     <div class="panel-header">
       <span>Output</span>
       <div class="actions">
+        <button id="btn-run" disabled>Run</button>
         <button id="btn-parse" disabled>Parse</button>
         <button id="btn-pretty" disabled>Pretty Print</button>
         <button id="btn-clear" disabled>Clear</button>
@@ -441,8 +442,8 @@
     tabSize: 2,
     indentWithTabs: false,
     extraKeys: {
-      'Ctrl-Enter': function() { if (mod) runParse(); },
-      'Cmd-Enter': function() { if (mod) runParse(); },
+      'Ctrl-Enter': function() { if (mod) runEval(); },
+      'Cmd-Enter': function() { if (mod) runEval(); },
       'Ctrl-Shift-Enter': function() { if (mod) runPrettyPrint(); },
       'Cmd-Shift-Enter': function() { if (mod) runPrettyPrint(); },
       'Tab': function(cm) {
@@ -459,6 +460,7 @@
   var status = document.getElementById('status');
   var statusDot = document.getElementById('status-dot');
   var timing = document.getElementById('timing');
+  var btnRun = document.getElementById('btn-run');
   var btnParse = document.getElementById('btn-parse');
   var btnPretty = document.getElementById('btn-pretty');
   var btnClear = document.getElementById('btn-clear');
@@ -488,6 +490,46 @@
   }
 
   // --- Actions ---
+
+  var editorCtx = null; // interpreter context for editor Run
+
+  function runEval() {
+    var source = cm.getValue();
+    output.className = '';
+    try {
+      // Create a fresh context each run
+      if (editorCtx) mod.ccall('eshkol_wasm_interp_destroy', null, ['number'], [editorCtx]);
+      editorCtx = mod.ccall('eshkol_wasm_interp_create', 'number', [], []);
+
+      var t0 = performance.now();
+      var ptr = mod.ccall('eshkol_wasm_eval', 'number', ['number', 'string'], [editorCtx, source]);
+      var raw = mod.UTF8ToString(ptr);
+      mod.ccall('eshkol_wasm_free', null, ['number'], [ptr]);
+      var elapsed = (performance.now() - t0).toFixed(1);
+
+      var result;
+      try { result = JSON.parse(raw); } catch(e) { result = { error: raw }; }
+
+      var text = '';
+      if (result.output) text += result.output;
+      if (result.error) {
+        text += (text ? '\n' : '') + 'Error: ' + result.error;
+        output.className = 'error';
+      } else if (result.value && result.type !== 'void') {
+        text += (text ? '\n' : '') + result.value;
+      }
+
+      output.textContent = text || '(no output)';
+      timing.textContent = 'Evaluated in ' + elapsed + 'ms';
+      btnRun.classList.add('active');
+      btnParse.classList.remove('active');
+      btnPretty.classList.remove('active');
+    } catch (e) {
+      output.className = 'error';
+      output.textContent = 'Error: ' + e.message;
+      timing.textContent = '';
+    }
+  }
 
   function callWasm(name, source) {
     var ptr = mod.ccall(name, 'number', ['string'], [source]);
@@ -541,6 +583,7 @@
     }
   }
 
+  btnRun.addEventListener('click', runEval);
   btnParse.addEventListener('click', runParse);
   btnPretty.addEventListener('click', runPrettyPrint);
   btnClear.addEventListener('click', function() {
@@ -768,6 +811,7 @@
     var elapsed = (performance.now() - t0).toFixed(0);
     status.textContent = 'Ready (loaded in ' + elapsed + 'ms)';
     statusDot.className = 'ready';
+    btnRun.disabled = false;
     btnParse.disabled = false;
     btnPretty.disabled = false;
     btnClear.disabled = false;
