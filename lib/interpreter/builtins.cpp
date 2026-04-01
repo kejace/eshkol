@@ -924,6 +924,95 @@ static interp_val_t* builtin_printf(interp_val_t** args, uint64_t n, interp_ctx_
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Vector operations (vectors implemented as tagged cons-lists)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Vectors reuse list representation with a symbol tag for simplicity.
+// A vector is stored as: (cons '#vector (cons elem0 (cons elem1 ... null)))
+
+static const char* VECTOR_TAG = "#vector";
+
+static bool is_vector(const interp_val_t* v) {
+    return v && v->type == INTERP_VAL_CONS && v->cons.car &&
+           v->cons.car->type == INTERP_VAL_SYMBOL &&
+           strcmp(v->cons.car->symbol, VECTOR_TAG) == 0;
+}
+
+static interp_val_t* vector_data(interp_val_t* v) { return v->cons.cdr; }
+
+static interp_val_t* builtin_vector(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    interp_val_t* lst = interp_make_null(ctx);
+    for (int64_t i = (int64_t)n - 1; i >= 0; i--)
+        lst = interp_make_cons(ctx, args[i], lst);
+    return interp_make_cons(ctx, interp_make_symbol(ctx, VECTOR_TAG), lst);
+}
+
+static interp_val_t* builtin_make_vector(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n < 1 || n > 2) return interp_make_error(ctx, "make-vector: expected 1-2 arguments");
+    REQUIRE_NUMBER("make-vector", args[0]);
+    int64_t len = (int64_t)as_double(args[0]);
+    interp_val_t* fill = (n >= 2) ? args[1] : interp_make_int(ctx, 0);
+    interp_val_t* lst = interp_make_null(ctx);
+    for (int64_t i = len - 1; i >= 0; i--)
+        lst = interp_make_cons(ctx, fill, lst);
+    return interp_make_cons(ctx, interp_make_symbol(ctx, VECTOR_TAG), lst);
+}
+
+static interp_val_t* builtin_vector_length(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("vector-length", 1);
+    if (!is_vector(args[0])) return interp_make_error(ctx, "vector-length: not a vector");
+    int64_t len = 0;
+    const interp_val_t* cur = vector_data(args[0]);
+    while (cur && cur->type == INTERP_VAL_CONS) { len++; cur = cur->cons.cdr; }
+    return interp_make_int(ctx, len);
+}
+
+static interp_val_t* builtin_vector_ref(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("vector-ref", 2);
+    if (!is_vector(args[0])) return interp_make_error(ctx, "vector-ref: not a vector");
+    REQUIRE_NUMBER("vector-ref", args[1]);
+    int64_t idx = (int64_t)as_double(args[1]);
+    const interp_val_t* cur = vector_data(args[0]);
+    for (int64_t i = 0; i < idx; i++) {
+        if (!cur || cur->type != INTERP_VAL_CONS) return interp_make_error(ctx, "vector-ref: index out of range");
+        cur = cur->cons.cdr;
+    }
+    if (!cur || cur->type != INTERP_VAL_CONS) return interp_make_error(ctx, "vector-ref: index out of range");
+    return cur->cons.car;
+}
+
+static interp_val_t* builtin_vector_set(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n != 3) return interp_make_error(ctx, "vector-set!: expected 3 arguments");
+    if (!is_vector(args[0])) return interp_make_error(ctx, "vector-set!: not a vector");
+    REQUIRE_NUMBER("vector-set!", args[1]);
+    int64_t idx = (int64_t)as_double(args[1]);
+    interp_val_t* cur = vector_data(args[0]);
+    for (int64_t i = 0; i < idx; i++) {
+        if (!cur || cur->type != INTERP_VAL_CONS) return interp_make_error(ctx, "vector-set!: index out of range");
+        cur = cur->cons.cdr;
+    }
+    if (!cur || cur->type != INTERP_VAL_CONS) return interp_make_error(ctx, "vector-set!: index out of range");
+    cur->cons.car = args[2];
+    return interp_make_void(ctx);
+}
+
+static interp_val_t* builtin_vector_to_list(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("vector->list", 1);
+    if (!is_vector(args[0])) return interp_make_error(ctx, "vector->list: not a vector");
+    return vector_data(args[0]);
+}
+
+static interp_val_t* builtin_list_to_vector(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("list->vector", 1);
+    return interp_make_cons(ctx, interp_make_symbol(ctx, VECTOR_TAG), args[0]);
+}
+
+static interp_val_t* builtin_vector_p(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("vector?", 1);
+    return interp_make_bool(ctx, is_vector(args[0]));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Registration
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1052,6 +1141,17 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "string->number", builtin_string_to_number, 1, 1);
     reg(ctx, "symbol->string", builtin_symbol_to_string, 1, 1);
     reg(ctx, "string->symbol", builtin_string_to_symbol, 1, 1);
+
+    // Vector
+    reg(ctx, "vector", builtin_vector, 0, -1);
+    reg(ctx, "make-vector", builtin_make_vector, 1, 2);
+    reg(ctx, "vector-length", builtin_vector_length, 1, 1);
+    reg(ctx, "vector-ref", builtin_vector_ref, 2, 2);
+    reg(ctx, "vector-set!", builtin_vector_set, 3, 3);
+    reg(ctx, "vector->list", builtin_vector_to_list, 1, 1);
+    reg(ctx, "list->vector", builtin_list_to_vector, 1, 1);
+    reg(ctx, "vector?", builtin_vector_p, 1, 1);
+    reg(ctx, "vref", builtin_vector_ref, 2, 2);  // Eshkol tensor/vector access alias
 
     // Type conversions
     reg(ctx, "exact->inexact", builtin_exact_to_inexact, 1, 1);
