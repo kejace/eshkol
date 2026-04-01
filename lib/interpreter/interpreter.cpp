@@ -289,7 +289,7 @@ void interp_output_append(interp_ctx_t* ctx, const char* str, uint64_t len) {
 interp_ctx_t* interp_ctx_create(void) {
     auto* ctx = (interp_ctx_t*)calloc(1, sizeof(interp_ctx_t));
     ctx->env = interp_frame_create(nullptr);
-    ctx->max_recursion_depth = 1000;
+    ctx->max_recursion_depth = 10000;
     interp_register_builtins(ctx);
     return ctx;
 }
