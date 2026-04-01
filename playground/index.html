@@ -419,7 +419,10 @@
 
 <footer>
   <div><span id="status-dot"></span><span id="status">Loading compiler...</span></div>
-  <div id="timing"></div>
+  <div>
+    <label style="margin-right:12px">Recursion limit: <input type="number" id="recursion-limit" value="10000" min="100" max="100000" step="1000" style="width:70px;background:var(--bg-editor);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:1px 4px;font-size:12px"></label>
+    <span id="timing"></span>
+  </div>
 </footer>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
@@ -500,6 +503,8 @@
       // Create a fresh context each run
       if (editorCtx) mod.ccall('eshkol_wasm_interp_destroy', null, ['number'], [editorCtx]);
       editorCtx = mod.ccall('eshkol_wasm_interp_create', 'number', [], []);
+      var limit = parseInt(document.getElementById('recursion-limit').value) || 10000;
+      mod.ccall('eshkol_wasm_interp_set_recursion_limit', null, ['number', 'number'], [editorCtx, limit]);
 
       var t0 = performance.now();
       var ptr = mod.ccall('eshkol_wasm_eval', 'number', ['number', 'string'], [editorCtx, source]);
@@ -672,12 +677,13 @@
 
     if (name === ':help' || name === ':h') {
       replAppend('<div class="repl-result cmd">' +
-        ':help      Show this help\n' +
-        ':clear     Clear output\n' +
-        ':reset     Reset interpreter state\n' +
-        ':examples  Show example expressions\n' +
-        ':editor    Switch to editor mode\n' +
-        ':ast expr  Show JSON AST for expression\n' +
+        ':help        Show this help\n' +
+        ':clear       Clear output\n' +
+        ':reset       Reset interpreter state\n' +
+        ':limit [n]   Show/set recursion limit\n' +
+        ':examples    Show example expressions\n' +
+        ':editor      Switch to editor mode\n' +
+        ':ast expr    Show JSON AST for expression\n' +
         '</div>');
     } else if (name === ':clear') {
       replOutput.innerHTML = '';
@@ -702,6 +708,19 @@
         replAppend('<div class="repl-result">' + escapeHtml(JSON.stringify(ast, null, 2)) + '</div>');
       } catch(e) {
         replAppend('<div class="repl-result error">' + escapeHtml(json) + '</div>');
+      }
+    } else if (name === ':limit') {
+      if (arg) {
+        var val = parseInt(arg);
+        if (val >= 100) {
+          document.getElementById('recursion-limit').value = val;
+          if (replCtx) mod.ccall('eshkol_wasm_interp_set_recursion_limit', null, ['number', 'number'], [replCtx, val]);
+          replAppend('<div class="repl-result cmd">Recursion limit set to ' + val + '</div>');
+        } else {
+          replAppend('<div class="repl-result error">:limit requires a number >= 100</div>');
+        }
+      } else {
+        replAppend('<div class="repl-result cmd">Recursion limit: ' + document.getElementById('recursion-limit').value + '</div>');
       }
     } else {
       replAppend('<div class="repl-result error">Unknown command: ' + escapeHtml(name) + ' (try :help)</div>');
@@ -819,6 +838,14 @@
     // Create interpreter context for REPL
     replCtx = mod.ccall('eshkol_wasm_interp_create', 'number', [], []);
     document.getElementById('repl-input').disabled = false;
+
+    // Recursion limit control
+    var limitInput = document.getElementById('recursion-limit');
+    function applyLimit() {
+      var val = parseInt(limitInput.value) || 10000;
+      if (replCtx) mod.ccall('eshkol_wasm_interp_set_recursion_limit', null, ['number', 'number'], [replCtx, val]);
+    }
+    limitInput.addEventListener('change', applyLimit);
   }).catch(function(e) {
     status.textContent = 'Failed to load: ' + e.message;
     statusDot.className = 'error';

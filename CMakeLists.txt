@@ -332,7 +332,7 @@ if(EMSCRIPTEN)
   target_link_libraries(eshkol-wasm PRIVATE eshkol-static)
 
   target_link_options(eshkol-wasm PRIVATE
-    "SHELL:-s EXPORTED_FUNCTIONS=['_eshkol_wasm_parse','_eshkol_wasm_pretty_print','_eshkol_wasm_free','_eshkol_wasm_interp_create','_eshkol_wasm_eval','_eshkol_wasm_interp_reset','_eshkol_wasm_interp_destroy','_malloc','_free']"
+    "SHELL:-s EXPORTED_FUNCTIONS=['_eshkol_wasm_parse','_eshkol_wasm_pretty_print','_eshkol_wasm_free','_eshkol_wasm_interp_create','_eshkol_wasm_eval','_eshkol_wasm_interp_reset','_eshkol_wasm_interp_destroy','_eshkol_wasm_interp_set_recursion_limit','_malloc','_free']"
     "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
     "SHELL:-s MODULARIZE=1"
     "SHELL:-s EXPORT_NAME='EshkolCompiler'"
