@@ -839,11 +839,11 @@ static interp_val_t* cxr(const char* name, const char* path, interp_val_t* v, in
 }
 
 static interp_val_t* builtin_cadddr(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("cadddr", 1); return cxr("cadddr", "adddr", args[0], ctx);
+    REQUIRE_ARGS("cadddr", 1); return cxr("cadddr", "addd", args[0], ctx);
 }
 
 static interp_val_t* builtin_caddddr(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
-    REQUIRE_ARGS("caddddr", 1); return cxr("caddddr", "addddr", args[0], ctx);
+    REQUIRE_ARGS("caddddr", 1); return cxr("caddddr", "adddd", args[0], ctx);
 }
 
 static interp_val_t* builtin_acons(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
@@ -1927,6 +1927,7 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "eq?", builtin_eq_p, 2, 2);
     reg(ctx, "eqv?", builtin_eq_p, 2, 2);
     reg(ctx, "equal?", builtin_equal_p, 2, 2);
+    reg(ctx, "eq", builtin_eq, 2, 2);  // alias without ?
 
     // List
     reg(ctx, "cons", builtin_cons, 2, 2);
@@ -1951,6 +1952,7 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "assv", builtin_assoc, 2, 2);
     reg(ctx, "assq", builtin_assoc, 2, 2);
     reg(ctx, "member", builtin_member, 2, 2);
+    reg(ctx, "member?", builtin_member, 2, 2);
     reg(ctx, "memv", builtin_member, 2, 2);
     reg(ctx, "memq", builtin_member, 2, 2);
     reg(ctx, "caaar", builtin_caaar, 1, 1);
