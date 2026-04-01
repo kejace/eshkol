@@ -387,6 +387,42 @@ interp_val_t* interp_apply(interp_val_t* func, interp_val_t** args,
             return result;
         }
 
+        // Handle composed functions: (#compose f g)
+        if (func->type == INTERP_VAL_CONS && func->cons.car &&
+            func->cons.car->type == INTERP_VAL_SYMBOL &&
+            strcmp(func->cons.car->symbol, "#compose") == 0) {
+            interp_val_t* fg = func->cons.cdr;
+            interp_val_t* f = fg->cons.car;
+            interp_val_t* g = fg->cons.cdr->cons.car;
+            // Apply g to args first
+            interp_val_t* g_result = interp_apply(g, args, num_args, ctx);
+            if (ctx->error_msg) return g_result;
+            // Then apply f to g's result
+            return interp_apply(f, &g_result, 1, ctx);
+        }
+
+        // Handle curried functions: (#curry f arg1 arg2 ...)
+        if (func->type == INTERP_VAL_CONS && func->cons.car &&
+            func->cons.car->type == INTERP_VAL_SYMBOL &&
+            strcmp(func->cons.car->symbol, "#curry") == 0) {
+            interp_val_t* parts = func->cons.cdr;
+            interp_val_t* real_func = parts->cons.car;
+            // Collect curried args + new args
+            interp_val_t* all_args[128];
+            int count = 0;
+            parts = parts->cons.cdr;
+            while (parts && parts->type == INTERP_VAL_CONS && count < 128) {
+                all_args[count++] = parts->cons.car;
+                parts = parts->cons.cdr;
+            }
+            for (uint64_t i = 0; i < num_args && count < 128; i++)
+                all_args[count++] = args[i];
+            func = real_func;
+            args = all_args;
+            num_args = count;
+            continue;
+        }
+
         if (func->type == INTERP_VAL_CLOSURE) {
             ctx->recursion_depth++;
             if (ctx->recursion_depth > ctx->max_recursion_depth) {

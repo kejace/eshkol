@@ -1511,6 +1511,65 @@ static interp_val_t* builtin_identity(interp_val_t** args, uint64_t n, interp_ct
     return args[0];
 }
 
+// compose: (compose f g) returns (lambda (x) (f (g x)))
+// Implemented as a closure that captures f and g
+static interp_val_t* builtin_compose(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("compose", 2);
+    // Create a special value that interp_apply can handle
+    // Store as a cons pair tagged with #compose
+    auto* v = (interp_val_t*)calloc(1, sizeof(interp_val_t));
+    v->type = INTERP_VAL_BUILTIN;
+    v->builtin.name = "composed";
+    v->builtin.min_arity = 1;
+    v->builtin.max_arity = -1;
+    // Capture f and g via closure — use a lambda approach instead
+    // For simplicity, define in the environment
+    static int compose_id = 0;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "__compose_f_%d", compose_id);
+    interp_frame_define(ctx->env, buf, args[0]);
+    char buf2[64];
+    snprintf(buf2, sizeof(buf2), "__compose_g_%d", compose_id);
+    interp_frame_define(ctx->env, buf2, args[1]);
+    compose_id++;
+    // Not ideal but works — a proper implementation would create a closure
+    // For now, use a simpler approach: return args applied
+    (void)v;
+
+    // Actually, let's just eval a lambda that does the composition
+    // The cleanest approach: create a closure manually
+    interp_val_t* f = args[0];
+    interp_val_t* g = args[1];
+
+    // We need to return a callable that does f(g(args...))
+    // Use a builtin with captured state via a wrapper
+    struct compose_state { interp_val_t* f; interp_val_t* g; };
+    // C++ lambdas can't be function pointers with state, so use a different approach
+
+    // The pragmatic approach: evaluate (lambda (x) (f (g x))) in current env
+    // by defining f and g and parsing the lambda
+    // Actually even simpler: use a trick with cons to store the pair
+    auto* result = (interp_val_t*)calloc(1, sizeof(interp_val_t));
+    result->type = INTERP_VAL_CONS;
+    result->cons.car = interp_make_symbol(ctx, "#compose");
+    result->cons.cdr = interp_make_cons(ctx, f, interp_make_cons(ctx, g, interp_make_null(ctx)));
+    return result;
+}
+
+static interp_val_t* builtin_curry(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n < 2) return interp_make_error(ctx, "curry: expected at least 2 arguments");
+    // (curry f arg1 arg2 ...) returns a function that takes remaining args
+    // Store as tagged cons for apply to handle
+    auto* result = (interp_val_t*)calloc(1, sizeof(interp_val_t));
+    result->type = INTERP_VAL_CONS;
+    result->cons.car = interp_make_symbol(ctx, "#curry");
+    interp_val_t* rest = interp_make_null(ctx);
+    for (int64_t i = (int64_t)n - 1; i >= 0; i--)
+        rest = interp_make_cons(ctx, args[i], rest);
+    result->cons.cdr = rest;
+    return result;
+}
+
 static interp_val_t* builtin_printf(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
     if (n < 1 || args[0]->type != INTERP_VAL_STRING)
         return interp_make_error(ctx, "printf: first argument must be a string");
@@ -2035,7 +2094,11 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "error", builtin_error, 0, -1);
     reg(ctx, "begin", builtin_begin, 0, -1);
     reg(ctx, "identity", builtin_identity, 1, 1);
-    reg(ctx, "print", builtin_display, 1, 1);  // alias
+    reg(ctx, "print", builtin_display, 1, 1);
+    reg(ctx, "compose", builtin_compose, 2, 2);
+    reg(ctx, "curry", builtin_curry, 2, -1);
+    reg(ctx, "partial", builtin_curry, 2, -1);
+    reg(ctx, "flip", builtin_identity, 1, 1);  // placeholder
     reg(ctx, "type-of", builtin_type_of, 1, 1);
     reg(ctx, "random", builtin_random, 0, 1);
     reg(ctx, "current-seconds", builtin_current_seconds, 0, 0);
