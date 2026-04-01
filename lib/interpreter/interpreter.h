@@ -31,6 +31,7 @@ typedef enum {
     INTERP_VAL_VOID,
     INTERP_VAL_SYMBOL,
     INTERP_VAL_ERROR,
+    INTERP_VAL_TAIL_CALL,
 } interp_val_type_t;
 
 struct interp_val;
@@ -77,6 +78,7 @@ typedef struct interp_val {
         interp_builtin_t builtin;
         char* error_msg;
         char* symbol;
+        struct { struct interp_val* func; struct interp_val** args; uint64_t num_args; } tail_call;
     };
 } interp_val_t;
 

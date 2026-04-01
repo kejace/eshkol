@@ -312,85 +312,131 @@ void interp_ctx_reset(interp_ctx_t* ctx) {
 
 // Forward declarations
 static interp_val_t* interp_ast_to_datum(const eshkol_ast_t* ast, interp_ctx_t* ctx);
+interp_val_t* interp_eval_tail(const eshkol_ast_t* ast, interp_ctx_t* ctx);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Apply — call a closure or builtin with evaluated arguments
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Helper: bind closure params and set up call frame
+static interp_frame_t* setup_closure_frame(interp_val_t* func, interp_val_t** args,
+                                            uint64_t num_args, interp_ctx_t* ctx) {
+    auto& cl = func->closure;
+    interp_frame_t* call_frame = interp_frame_create(cl.env);
+
+    uint64_t fixed = cl.num_params;
+    if (cl.is_variadic && fixed > 0) fixed--;
+
+    for (uint64_t i = 0; i < fixed && i < num_args; i++) {
+        if (cl.params && cl.params[i].type == ESHKOL_VAR) {
+            interp_frame_define(call_frame, cl.params[i].variable.id, args[i]);
+        }
+    }
+
+    if (cl.is_variadic && cl.rest_param) {
+        interp_val_t* rest = interp_make_null(ctx);
+        for (int64_t i = (int64_t)num_args - 1; i >= (int64_t)fixed; i--) {
+            rest = interp_make_cons(ctx, args[i], rest);
+        }
+        interp_frame_define(call_frame, cl.rest_param, rest);
+    }
+
+    return call_frame;
+}
+
+// Create a tail-call thunk (avoids C stack growth)
+static interp_val_t* make_tail_call(interp_ctx_t* ctx, interp_val_t* func,
+                                     interp_val_t** args, uint64_t num_args) {
+    auto* v = (interp_val_t*)calloc(1, sizeof(interp_val_t));
+    v->type = INTERP_VAL_TAIL_CALL;
+    v->tail_call.func = func;
+    // Copy args array
+    v->tail_call.args = (interp_val_t**)malloc(num_args * sizeof(interp_val_t*));
+    memcpy(v->tail_call.args, args, num_args * sizeof(interp_val_t*));
+    v->tail_call.num_args = num_args;
+    return v;
+}
+
 interp_val_t* interp_apply(interp_val_t* func, interp_val_t** args,
                            uint64_t num_args, interp_ctx_t* ctx) {
-    if (!func) return interp_make_error(ctx, "cannot call null");
+    // Trampoline loop: keep executing tail calls without growing C stack
+    while (true) {
+        if (!func) return interp_make_error(ctx, "cannot call null");
 
-    if (func->type == INTERP_VAL_BUILTIN) {
-        // Arity check
-        if (func->builtin.min_arity >= 0 && (int)num_args < func->builtin.min_arity) {
-            char buf[128];
-            snprintf(buf, sizeof(buf), "%s: expected at least %d arguments, got %llu",
-                     func->builtin.name, func->builtin.min_arity, (unsigned long long)num_args);
-            return interp_make_error(ctx, buf);
+        if (func->type == INTERP_VAL_BUILTIN) {
+            if (func->builtin.min_arity >= 0 && (int)num_args < func->builtin.min_arity) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "%s: expected at least %d arguments, got %llu",
+                         func->builtin.name, func->builtin.min_arity, (unsigned long long)num_args);
+                return interp_make_error(ctx, buf);
+            }
+            if (func->builtin.max_arity >= 0 && (int)num_args > func->builtin.max_arity) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "%s: expected at most %d arguments, got %llu",
+                         func->builtin.name, func->builtin.max_arity, (unsigned long long)num_args);
+                return interp_make_error(ctx, buf);
+            }
+            interp_val_t* result = func->builtin.fn(args, num_args, ctx);
+            // Trampoline: if builtin returned a tail call, continue loop
+            if (result && result->type == INTERP_VAL_TAIL_CALL) {
+                func = result->tail_call.func;
+                args = result->tail_call.args;
+                num_args = result->tail_call.num_args;
+                continue;
+            }
+            return result;
         }
-        if (func->builtin.max_arity >= 0 && (int)num_args > func->builtin.max_arity) {
-            char buf[128];
-            snprintf(buf, sizeof(buf), "%s: expected at most %d arguments, got %llu",
-                     func->builtin.name, func->builtin.max_arity, (unsigned long long)num_args);
-            return interp_make_error(ctx, buf);
-        }
-        return func->builtin.fn(args, num_args, ctx);
-    }
 
-    if (func->type == INTERP_VAL_CLOSURE) {
-        auto& cl = func->closure;
+        if (func->type == INTERP_VAL_CLOSURE) {
+            ctx->recursion_depth++;
+            if (ctx->recursion_depth > ctx->max_recursion_depth) {
+                ctx->recursion_depth--;
+                return interp_make_error(ctx, "maximum recursion depth exceeded");
+            }
 
-        // Recursion guard
-        ctx->recursion_depth++;
-        if (ctx->recursion_depth > ctx->max_recursion_depth) {
+            interp_frame_t* call_frame = setup_closure_frame(func, args, num_args, ctx);
+            interp_frame_t* saved_env = ctx->env;
+            ctx->env = call_frame;
+
+            auto& cl = func->closure;
+            interp_val_t* result;
+            if (cl.body_ast) {
+                result = interp_eval_tail(cl.body_ast, ctx);
+            } else if (cl.body_op) {
+                result = interp_eval_op(cl.body_op, ctx);
+            } else {
+                result = interp_make_void(ctx);
+            }
+
+            ctx->env = saved_env;
             ctx->recursion_depth--;
-            return interp_make_error(ctx, "maximum recursion depth exceeded");
-        }
 
-        // Create new frame with closure's captured env
-        interp_frame_t* call_frame = interp_frame_create(cl.env);
-
-        // Bind parameters
-        uint64_t fixed = cl.num_params;
-        if (cl.is_variadic && fixed > 0) fixed--;
-
-        for (uint64_t i = 0; i < fixed && i < num_args; i++) {
-            if (cl.params && cl.params[i].type == ESHKOL_VAR) {
-                interp_frame_define(call_frame, cl.params[i].variable.id, args[i]);
+            // Trampoline: if body returned a tail call, loop instead of recursing
+            if (result && result->type == INTERP_VAL_TAIL_CALL) {
+                func = result->tail_call.func;
+                args = result->tail_call.args;
+                num_args = result->tail_call.num_args;
+                continue;
             }
+            return result;
         }
 
-        // Variadic rest parameter
-        if (cl.is_variadic && cl.rest_param) {
-            interp_val_t* rest = interp_make_null(ctx);
-            for (int64_t i = (int64_t)num_args - 1; i >= (int64_t)fixed; i--) {
-                rest = interp_make_cons(ctx, args[i], rest);
-            }
-            interp_frame_define(call_frame, cl.rest_param, rest);
-        }
-
-        // Save and set environment
-        interp_frame_t* saved_env = ctx->env;
-        ctx->env = call_frame;
-
-        interp_val_t* result;
-        if (cl.body_ast) {
-            result = interp_eval(cl.body_ast, ctx);
-        } else if (cl.body_op) {
-            result = interp_eval_op(cl.body_op, ctx);
-        } else {
-            result = interp_make_void(ctx);
-        }
-
-        ctx->env = saved_env;
-        ctx->recursion_depth--;
-        return result;
+        char buf[64];
+        snprintf(buf, sizeof(buf), "cannot call %s", interp_val_type_name(func));
+        return interp_make_error(ctx, buf);
     }
+}
 
-    char buf[64];
-    snprintf(buf, sizeof(buf), "cannot call %s", interp_val_type_name(func));
-    return interp_make_error(ctx, buf);
+// ═══════════════════════════════════════════════════════════════════════════
+// Resolve tail calls — use when result must be a value (non-tail position)
+// ═══════════════════════════════════════════════════════════════════════════
+
+static interp_val_t* resolve_tail_calls(interp_val_t* val, interp_ctx_t* ctx) {
+    while (val && val->type == INTERP_VAL_TAIL_CALL) {
+        val = interp_apply(val->tail_call.func, val->tail_call.args,
+                           val->tail_call.num_args, ctx);
+    }
+    return val;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -466,18 +512,18 @@ interp_val_t* interp_eval_op(const eshkol_operations_t* op, interp_ctx_t* ctx) {
             interp_val_t* cond = interp_eval(&c.variables[0], ctx);
             if (ctx->error_msg) return cond;
             if (interp_val_is_truthy(cond)) {
-                return interp_eval(&c.variables[1], ctx);
+                return interp_eval_tail(&c.variables[1], ctx);
             } else if (c.num_vars >= 3) {
-                return interp_eval(&c.variables[2], ctx);
+                return interp_eval_tail(&c.variables[2], ctx);
             }
             return interp_make_void(ctx);
         }
 
-        // Regular function call
+        // Regular function call — return as tail call thunk
+        // The trampoline in interp_apply will execute it
         interp_val_t* func = interp_eval(c.func, ctx);
         if (ctx->error_msg) return func;
 
-        // Eval arguments
         interp_val_t** args = nullptr;
         if (c.num_vars > 0) {
             args = (interp_val_t**)malloc(c.num_vars * sizeof(interp_val_t*));
@@ -490,9 +536,8 @@ interp_val_t* interp_eval_op(const eshkol_operations_t* op, interp_ctx_t* ctx) {
             }
         }
 
-        interp_val_t* result = interp_apply(func, args, c.num_vars, ctx);
-        free(args);
-        return result;
+        // Return tail call thunk — the trampoline will handle it
+        return make_tail_call(ctx, func, args ? args : nullptr, c.num_vars);
     }
 
     // ── Arithmetic ops stored as ops (ADD_OP, SUB_OP, etc.) ────────
@@ -575,12 +620,14 @@ interp_val_t* interp_eval_op(const eshkol_operations_t* op, interp_ctx_t* ctx) {
     // ── sequence (begin) ───────────────────────────────────────────
     case ESHKOL_SEQUENCE_OP: {
         const auto& s = op->sequence_op;
-        interp_val_t* result = interp_make_void(ctx);
-        for (uint64_t i = 0; i < s.num_expressions; i++) {
-            result = interp_eval(&s.expressions[i], ctx);
-            if (ctx->error_msg) return result;
+        if (s.num_expressions == 0) return interp_make_void(ctx);
+        // Eval all but last normally
+        for (uint64_t i = 0; i + 1 < s.num_expressions; i++) {
+            interp_val_t* r = interp_eval(&s.expressions[i], ctx);
+            if (ctx->error_msg) return r;
         }
-        return result;
+        // Last expression in tail position
+        return interp_eval_tail(&s.expressions[s.num_expressions - 1], ctx);
     }
 
     // ── if (direct form with nested operations) ────────────────────
@@ -617,7 +664,7 @@ interp_val_t* interp_eval_op(const eshkol_operations_t* op, interp_ctx_t* ctx) {
 
         interp_frame_t* saved = ctx->env;
         ctx->env = let_frame;
-        interp_val_t* result = interp_eval(l.body, ctx);
+        interp_val_t* result = interp_eval_tail(l.body, ctx);
         ctx->env = saved;
         return result;
     }
@@ -933,8 +980,11 @@ interp_val_t* interp_eval(const eshkol_ast_t* ast, interp_ctx_t* ctx) {
             return closure;
         }
 
-        case ESHKOL_OP:
-            return interp_eval_op(&ast->operation, ctx);
+        case ESHKOL_OP: {
+            interp_val_t* r = interp_eval_op(&ast->operation, ctx);
+            // Resolve any tail calls — interp_eval is used in non-tail positions
+            return resolve_tail_calls(r, ctx);
+        }
 
         default: {
             char buf[64];
@@ -942,4 +992,16 @@ interp_val_t* interp_eval(const eshkol_ast_t* ast, interp_ctx_t* ctx) {
             return interp_make_error(ctx, buf);
         }
     }
+}
+
+// Eval in tail position — may return tail call thunks
+interp_val_t* interp_eval_tail(const eshkol_ast_t* ast, interp_ctx_t* ctx) {
+    if (!ast) return interp_make_null(ctx);
+    if (ctx->error_msg) return interp_make_null(ctx);
+    if (ast->type == ESHKOL_OP) {
+        // Don't resolve — let tail calls propagate
+        return interp_eval_op(&ast->operation, ctx);
+    }
+    // Non-ops can't produce tail calls
+    return interp_eval(ast, ctx);
 }
