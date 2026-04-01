@@ -362,6 +362,62 @@ if(EMSCRIPTEN)
     COPYONLY
   )
 
+  # Copy test runner to build directory
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/wasm_test_runner.cjs"
+    "${CMAKE_BINARY_DIR}/wasm_test_runner.cjs"
+    COPYONLY
+  )
+
+  # Register wasm test suites
+  find_program(NODE_EXE NAMES node nodejs)
+  if(NODE_EXE)
+    message(STATUS "Node.js found: ${NODE_EXE} - wasm tests enabled")
+
+    function(eshkol_add_wasm_suite_test suite_name test_glob)
+        add_test(
+            NAME wasm-suite-${suite_name}
+            COMMAND
+                ${CMAKE_COMMAND}
+                -DPROJECT_ROOT=${CMAKE_SOURCE_DIR}
+                -DBUILD_DIR=${CMAKE_BINARY_DIR}
+                -DSUITE_NAME=${suite_name}
+                -DTEST_GLOB=${test_glob}
+                -DNODE_EXE=${NODE_EXE}
+                -P ${CMAKE_SOURCE_DIR}/cmake/RunSuiteWasm.cmake
+        )
+        set_tests_properties(wasm-suite-${suite_name} PROPERTIES LABELS "wasm;suite")
+    endfunction()
+
+    function(eshkol_add_wasm_negative_suite_test suite_name test_glob negative_mode)
+        add_test(
+            NAME wasm-suite-${suite_name}
+            COMMAND
+                ${CMAKE_COMMAND}
+                -DPROJECT_ROOT=${CMAKE_SOURCE_DIR}
+                -DBUILD_DIR=${CMAKE_BINARY_DIR}
+                -DSUITE_NAME=${suite_name}
+                -DTEST_GLOB=${test_glob}
+                -DNODE_EXE=${NODE_EXE}
+                -DNEGATIVE_MODE=${negative_mode}
+                -P ${CMAKE_SOURCE_DIR}/cmake/RunSuiteWasm.cmake
+        )
+        set_tests_properties(wasm-suite-${suite_name} PROPERTIES LABELS "wasm;suite")
+    endfunction()
+
+    eshkol_add_wasm_suite_test(lists "tests/lists/*.esk")
+    eshkol_add_wasm_suite_test(features "tests/features/*.esk")
+    eshkol_add_wasm_suite_test(stdlib "tests/stdlib/*.esk")
+    eshkol_add_wasm_suite_test(types "tests/types/*.esk")
+    eshkol_add_wasm_suite_test(autodiff "tests/autodiff/*.esk")
+    eshkol_add_wasm_suite_test(ml "tests/ml/*.esk")
+    eshkol_add_wasm_suite_test(neural "tests/neural/*.esk")
+    eshkol_add_wasm_negative_suite_test(memory "tests/memory/*.esk" "compile_or_runtime")
+    eshkol_add_wasm_negative_suite_test(modules "tests/modules/*.esk" "compile_or_runtime")
+  else()
+    message(STATUS "Node.js not found - wasm tests disabled")
+  endif()
+
   message(STATUS "Emscripten wasm target enabled - target: eshkol-wasm")
 endif()
 
