@@ -834,6 +834,21 @@ static interp_val_t* builtin_atan(interp_val_t** args, uint64_t n, interp_ctx_t*
     return interp_make_error(ctx, "atan: expected 1-2 arguments");
 }
 
+static interp_val_t* builtin_sinh(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("sinh", 1); REQUIRE_NUMBER("sinh", args[0]);
+    return interp_make_double(ctx, sinh(as_double(args[0])));
+}
+
+static interp_val_t* builtin_cosh(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("cosh", 1); REQUIRE_NUMBER("cosh", args[0]);
+    return interp_make_double(ctx, cosh(as_double(args[0])));
+}
+
+static interp_val_t* builtin_tanh(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("tanh", 1); REQUIRE_NUMBER("tanh", args[0]);
+    return interp_make_double(ctx, tanh(as_double(args[0])));
+}
+
 static interp_val_t* builtin_truncate(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
     REQUIRE_ARGS("truncate", 1); REQUIRE_NUMBER("truncate", args[0]);
     return interp_make_int(ctx, (int64_t)as_double(args[0]));
@@ -1021,6 +1036,9 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "atan", builtin_atan, 1, 2);
     reg(ctx, "exp", builtin_exp, 1, 1);
     reg(ctx, "log", builtin_log, 1, 1);
+    reg(ctx, "sinh", builtin_sinh, 1, 1);
+    reg(ctx, "cosh", builtin_cosh, 1, 1);
+    reg(ctx, "tanh", builtin_tanh, 1, 1);
 
     // String
     reg(ctx, "string-length", builtin_string_length, 1, 1);
