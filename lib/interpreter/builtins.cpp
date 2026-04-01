@@ -525,6 +525,390 @@ static interp_val_t* builtin_string_to_number(interp_val_t** args, uint64_t n, i
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Additional predicates
+// ═══════════════════════════════════════════════════════════════════════════
+
+static interp_val_t* builtin_positive_p(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("positive?", 1); REQUIRE_NUMBER("positive?", args[0]);
+    return interp_make_bool(ctx, as_double(args[0]) > 0);
+}
+
+static interp_val_t* builtin_negative_p(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("negative?", 1); REQUIRE_NUMBER("negative?", args[0]);
+    return interp_make_bool(ctx, as_double(args[0]) < 0);
+}
+
+static interp_val_t* builtin_odd_p(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("odd?", 1); REQUIRE_NUMBER("odd?", args[0]);
+    return interp_make_bool(ctx, ((int64_t)as_double(args[0])) % 2 != 0);
+}
+
+static interp_val_t* builtin_even_p(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("even?", 1); REQUIRE_NUMBER("even?", args[0]);
+    return interp_make_bool(ctx, ((int64_t)as_double(args[0])) % 2 == 0);
+}
+
+static interp_val_t* builtin_integer_p(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("integer?", 1);
+    if (args[0]->type == INTERP_VAL_INT) return interp_make_bool(ctx, true);
+    if (args[0]->type == INTERP_VAL_DOUBLE)
+        return interp_make_bool(ctx, args[0]->double_val == (int64_t)args[0]->double_val);
+    return interp_make_bool(ctx, false);
+}
+
+static interp_val_t* builtin_real_p(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("real?", 1);
+    return interp_make_bool(ctx, is_number(args[0]));
+}
+
+static interp_val_t* builtin_char_p(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("char?", 1);
+    return interp_make_bool(ctx, args[0]->type == INTERP_VAL_CHAR);
+}
+
+static interp_val_t* builtin_symbol_p(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("symbol?", 1);
+    return interp_make_bool(ctx, args[0]->type == INTERP_VAL_SYMBOL);
+}
+
+static interp_val_t* builtin_list_p(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("list?", 1);
+    const interp_val_t* v = args[0];
+    while (v && v->type == INTERP_VAL_CONS) v = v->cons.cdr;
+    return interp_make_bool(ctx, v && v->type == INTERP_VAL_NULL);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Additional list operations
+// ═══════════════════════════════════════════════════════════════════════════
+
+static interp_val_t* builtin_cadr(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("cadr", 1);
+    if (args[0]->type != INTERP_VAL_CONS) return interp_make_error(ctx, "cadr: not a pair");
+    auto* d = args[0]->cons.cdr;
+    if (!d || d->type != INTERP_VAL_CONS) return interp_make_error(ctx, "cadr: cdr is not a pair");
+    return d->cons.car;
+}
+
+static interp_val_t* builtin_cdar(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("cdar", 1);
+    if (args[0]->type != INTERP_VAL_CONS) return interp_make_error(ctx, "cdar: not a pair");
+    auto* a = args[0]->cons.car;
+    if (!a || a->type != INTERP_VAL_CONS) return interp_make_error(ctx, "cdar: car is not a pair");
+    return a->cons.cdr;
+}
+
+static interp_val_t* builtin_caar(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("caar", 1);
+    if (args[0]->type != INTERP_VAL_CONS) return interp_make_error(ctx, "caar: not a pair");
+    auto* a = args[0]->cons.car;
+    if (!a || a->type != INTERP_VAL_CONS) return interp_make_error(ctx, "caar: car is not a pair");
+    return a->cons.car;
+}
+
+static interp_val_t* builtin_cddr(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("cddr", 1);
+    if (args[0]->type != INTERP_VAL_CONS) return interp_make_error(ctx, "cddr: not a pair");
+    auto* d = args[0]->cons.cdr;
+    if (!d || d->type != INTERP_VAL_CONS) return interp_make_error(ctx, "cddr: cdr is not a pair");
+    return d->cons.cdr;
+}
+
+static interp_val_t* builtin_caddr(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("caddr", 1);
+    if (args[0]->type != INTERP_VAL_CONS) return interp_make_error(ctx, "caddr: not a pair");
+    auto* d = args[0]->cons.cdr;
+    if (!d || d->type != INTERP_VAL_CONS) return interp_make_error(ctx, "caddr: not enough elements");
+    auto* dd = d->cons.cdr;
+    if (!dd || dd->type != INTERP_VAL_CONS) return interp_make_error(ctx, "caddr: not enough elements");
+    return dd->cons.car;
+}
+
+static interp_val_t* builtin_list_ref(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("list-ref", 2); REQUIRE_NUMBER("list-ref", args[1]);
+    int64_t idx = (int64_t)as_double(args[1]);
+    const interp_val_t* cur = args[0];
+    for (int64_t i = 0; i < idx; i++) {
+        if (!cur || cur->type != INTERP_VAL_CONS) return interp_make_error(ctx, "list-ref: index out of range");
+        cur = cur->cons.cdr;
+    }
+    if (!cur || cur->type != INTERP_VAL_CONS) return interp_make_error(ctx, "list-ref: index out of range");
+    return cur->cons.car;
+}
+
+static interp_val_t* builtin_list_tail(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("list-tail", 2); REQUIRE_NUMBER("list-tail", args[1]);
+    int64_t idx = (int64_t)as_double(args[1]);
+    interp_val_t* cur = args[0];
+    for (int64_t i = 0; i < idx; i++) {
+        if (!cur || cur->type != INTERP_VAL_CONS) return interp_make_error(ctx, "list-tail: index out of range");
+        cur = cur->cons.cdr;
+    }
+    return cur;
+}
+
+static interp_val_t* builtin_for_each(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n < 2) return interp_make_error(ctx, "for-each: expected at least 2 arguments");
+    interp_val_t* func = args[0];
+    interp_val_t* lst = args[1];
+    while (lst && lst->type == INTERP_VAL_CONS) {
+        interp_val_t* arg = lst->cons.car;
+        interp_apply(func, &arg, 1, ctx);
+        if (ctx->error_msg) return interp_make_error(ctx, ctx->error_msg);
+        lst = lst->cons.cdr;
+    }
+    return interp_make_void(ctx);
+}
+
+static interp_val_t* builtin_assoc(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("assoc", 2);
+    interp_val_t* key = args[0];
+    interp_val_t* alist = args[1];
+    while (alist && alist->type == INTERP_VAL_CONS) {
+        interp_val_t* pair = alist->cons.car;
+        if (pair && pair->type == INTERP_VAL_CONS && vals_equal(pair->cons.car, key)) {
+            return pair;
+        }
+        alist = alist->cons.cdr;
+    }
+    return interp_make_bool(ctx, false);
+}
+
+static interp_val_t* builtin_member(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("member", 2);
+    interp_val_t* key = args[0];
+    interp_val_t* lst = args[1];
+    while (lst && lst->type == INTERP_VAL_CONS) {
+        if (vals_equal(lst->cons.car, key)) return lst;
+        lst = lst->cons.cdr;
+    }
+    return interp_make_bool(ctx, false);
+}
+
+static interp_val_t* builtin_set_car(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("set-car!", 2);
+    if (args[0]->type != INTERP_VAL_CONS) return interp_make_error(ctx, "set-car!: not a pair");
+    args[0]->cons.car = args[1];
+    return interp_make_void(ctx);
+}
+
+static interp_val_t* builtin_set_cdr(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("set-cdr!", 2);
+    if (args[0]->type != INTERP_VAL_CONS) return interp_make_error(ctx, "set-cdr!: not a pair");
+    args[0]->cons.cdr = args[1];
+    return interp_make_void(ctx);
+}
+
+static interp_val_t* builtin_range(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n < 1 || n > 3) return interp_make_error(ctx, "range: expected 1-3 arguments");
+    for (uint64_t i = 0; i < n; i++) REQUIRE_NUMBER("range", args[i]);
+    int64_t start = 0, end_val, step = 1;
+    if (n == 1) { end_val = (int64_t)as_double(args[0]); }
+    else { start = (int64_t)as_double(args[0]); end_val = (int64_t)as_double(args[1]); }
+    if (n == 3) step = (int64_t)as_double(args[2]);
+    if (step == 0) return interp_make_error(ctx, "range: step cannot be zero");
+
+    interp_val_t* result = interp_make_null(ctx);
+    if (step > 0) {
+        for (int64_t i = end_val - step; i >= start; i -= step)
+            result = interp_make_cons(ctx, interp_make_int(ctx, i), result);
+    } else {
+        for (int64_t i = end_val - step; i <= start; i -= step)
+            result = interp_make_cons(ctx, interp_make_int(ctx, i), result);
+    }
+    return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Additional string operations
+// ═══════════════════════════════════════════════════════════════════════════
+
+static interp_val_t* builtin_string_ref(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("string-ref", 2);
+    if (args[0]->type != INTERP_VAL_STRING) return interp_make_error(ctx, "string-ref: not a string");
+    REQUIRE_NUMBER("string-ref", args[1]);
+    int64_t idx = (int64_t)as_double(args[1]);
+    if (idx < 0 || (uint64_t)idx >= args[0]->str_val.len)
+        return interp_make_error(ctx, "string-ref: index out of range");
+    return interp_make_char(ctx, args[0]->str_val.ptr[idx]);
+}
+
+static interp_val_t* builtin_substring(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n < 2 || n > 3) return interp_make_error(ctx, "substring: expected 2-3 arguments");
+    if (args[0]->type != INTERP_VAL_STRING) return interp_make_error(ctx, "substring: not a string");
+    REQUIRE_NUMBER("substring", args[1]);
+    int64_t start = (int64_t)as_double(args[1]);
+    int64_t end_val = (int64_t)args[0]->str_val.len;
+    if (n == 3) { REQUIRE_NUMBER("substring", args[2]); end_val = (int64_t)as_double(args[2]); }
+    if (start < 0 || end_val < start || (uint64_t)end_val > args[0]->str_val.len)
+        return interp_make_error(ctx, "substring: index out of range");
+    return interp_make_string(ctx, args[0]->str_val.ptr + start, (uint64_t)(end_val - start));
+}
+
+static interp_val_t* builtin_string_contains(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("string-contains", 2);
+    if (args[0]->type != INTERP_VAL_STRING || args[1]->type != INTERP_VAL_STRING)
+        return interp_make_error(ctx, "string-contains: not a string");
+    return interp_make_bool(ctx, strstr(args[0]->str_val.ptr, args[1]->str_val.ptr) != nullptr);
+}
+
+static interp_val_t* builtin_string_upcase(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("string-upcase", 1);
+    if (args[0]->type != INTERP_VAL_STRING) return interp_make_error(ctx, "string-upcase: not a string");
+    char* s = (char*)malloc(args[0]->str_val.len + 1);
+    for (uint64_t i = 0; i < args[0]->str_val.len; i++)
+        s[i] = (char)toupper((unsigned char)args[0]->str_val.ptr[i]);
+    s[args[0]->str_val.len] = '\0';
+    auto* v = interp_make_string(ctx, s, args[0]->str_val.len);
+    free(s);
+    return v;
+}
+
+static interp_val_t* builtin_string_downcase(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("string-downcase", 1);
+    if (args[0]->type != INTERP_VAL_STRING) return interp_make_error(ctx, "string-downcase: not a string");
+    char* s = (char*)malloc(args[0]->str_val.len + 1);
+    for (uint64_t i = 0; i < args[0]->str_val.len; i++)
+        s[i] = (char)tolower((unsigned char)args[0]->str_val.ptr[i]);
+    s[args[0]->str_val.len] = '\0';
+    auto* v = interp_make_string(ctx, s, args[0]->str_val.len);
+    free(s);
+    return v;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Type conversions
+// ═══════════════════════════════════════════════════════════════════════════
+
+static interp_val_t* builtin_exact_to_inexact(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("exact->inexact", 1); REQUIRE_NUMBER("exact->inexact", args[0]);
+    return interp_make_double(ctx, as_double(args[0]));
+}
+
+static interp_val_t* builtin_inexact_to_exact(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("inexact->exact", 1); REQUIRE_NUMBER("inexact->exact", args[0]);
+    return interp_make_int(ctx, (int64_t)as_double(args[0]));
+}
+
+static interp_val_t* builtin_char_to_integer(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("char->integer", 1);
+    if (args[0]->type != INTERP_VAL_CHAR) return interp_make_error(ctx, "char->integer: not a char");
+    return interp_make_int(ctx, (int64_t)(unsigned char)args[0]->char_val);
+}
+
+static interp_val_t* builtin_integer_to_char(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("integer->char", 1); REQUIRE_NUMBER("integer->char", args[0]);
+    return interp_make_char(ctx, (char)(int64_t)as_double(args[0]));
+}
+
+static interp_val_t* builtin_symbol_to_string(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("symbol->string", 1);
+    if (args[0]->type != INTERP_VAL_SYMBOL) return interp_make_error(ctx, "symbol->string: not a symbol");
+    return interp_make_string(ctx, args[0]->symbol, strlen(args[0]->symbol));
+}
+
+static interp_val_t* builtin_string_to_symbol(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("string->symbol", 1);
+    if (args[0]->type != INTERP_VAL_STRING) return interp_make_error(ctx, "string->symbol: not a string");
+    return interp_make_symbol(ctx, args[0]->str_val.ptr);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Math (additional trig/hyperbolic)
+// ═══════════════════════════════════════════════════════════════════════════
+
+static interp_val_t* builtin_asin(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("asin", 1); REQUIRE_NUMBER("asin", args[0]);
+    return interp_make_double(ctx, asin(as_double(args[0])));
+}
+
+static interp_val_t* builtin_acos(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("acos", 1); REQUIRE_NUMBER("acos", args[0]);
+    return interp_make_double(ctx, acos(as_double(args[0])));
+}
+
+static interp_val_t* builtin_atan(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n == 1) { REQUIRE_NUMBER("atan", args[0]); return interp_make_double(ctx, atan(as_double(args[0]))); }
+    if (n == 2) { REQUIRE_NUMBER("atan", args[0]); REQUIRE_NUMBER("atan", args[1]);
+                   return interp_make_double(ctx, atan2(as_double(args[0]), as_double(args[1]))); }
+    return interp_make_error(ctx, "atan: expected 1-2 arguments");
+}
+
+static interp_val_t* builtin_truncate(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("truncate", 1); REQUIRE_NUMBER("truncate", args[0]);
+    return interp_make_int(ctx, (int64_t)as_double(args[0]));
+}
+
+static interp_val_t* builtin_quotient(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("quotient", 2); REQUIRE_NUMBER("quotient", args[0]); REQUIRE_NUMBER("quotient", args[1]);
+    int64_t b = (int64_t)as_double(args[1]);
+    if (b == 0) return interp_make_error(ctx, "quotient: division by zero");
+    return interp_make_int(ctx, (int64_t)as_double(args[0]) / b);
+}
+
+static interp_val_t* builtin_gcd(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("gcd", 2); REQUIRE_NUMBER("gcd", args[0]); REQUIRE_NUMBER("gcd", args[1]);
+    int64_t a = llabs((int64_t)as_double(args[0])), b = llabs((int64_t)as_double(args[1]));
+    while (b) { int64_t t = b; b = a % b; a = t; }
+    return interp_make_int(ctx, a);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Misc
+// ═══════════════════════════════════════════════════════════════════════════
+
+static interp_val_t* builtin_void(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    return interp_make_void(ctx);
+}
+
+static interp_val_t* builtin_error(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n >= 1 && args[0]->type == INTERP_VAL_STRING)
+        return interp_make_error(ctx, args[0]->str_val.ptr);
+    if (n >= 1) {
+        char* s = interp_val_to_string(args[0]);
+        auto* v = interp_make_error(ctx, s);
+        free(s);
+        return v;
+    }
+    return interp_make_error(ctx, "error");
+}
+
+static interp_val_t* builtin_begin(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n == 0) return interp_make_void(ctx);
+    return args[n - 1]; // args already evaluated by caller
+}
+
+static interp_val_t* builtin_identity(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    REQUIRE_ARGS("identity", 1);
+    return args[0];
+}
+
+static interp_val_t* builtin_printf(interp_val_t** args, uint64_t n, interp_ctx_t* ctx) {
+    if (n < 1 || args[0]->type != INTERP_VAL_STRING)
+        return interp_make_error(ctx, "printf: first argument must be a string");
+    // Simple printf: just output the format string with ~a substitution
+    const char* fmt = args[0]->str_val.ptr;
+    uint64_t arg_idx = 1;
+    std::string out;
+    for (size_t i = 0; fmt[i]; i++) {
+        if (fmt[i] == '~' && fmt[i+1] == 'a' && arg_idx < n) {
+            char* s = interp_val_to_string(args[arg_idx++]);
+            if (args[arg_idx-1]->type == INTERP_VAL_STRING)
+                out.append(args[arg_idx-1]->str_val.ptr, args[arg_idx-1]->str_val.len);
+            else { out += s; }
+            free(s);
+            i++; // skip 'a'
+        } else if (fmt[i] == '~' && fmt[i+1] == '%') {
+            out += '\n'; i++;
+        } else {
+            out += fmt[i];
+        }
+    }
+    interp_output_append(ctx, out.c_str(), out.size());
+    return interp_make_void(ctx);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Registration
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -566,6 +950,19 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "boolean?", builtin_boolean_p, 1, 1);
     reg(ctx, "procedure?", builtin_procedure_p, 1, 1);
     reg(ctx, "zero?", builtin_zero_p, 1, 1);
+    reg(ctx, "positive?", builtin_positive_p, 1, 1);
+    reg(ctx, "negative?", builtin_negative_p, 1, 1);
+    reg(ctx, "odd?", builtin_odd_p, 1, 1);
+    reg(ctx, "even?", builtin_even_p, 1, 1);
+    reg(ctx, "integer?", builtin_integer_p, 1, 1);
+    reg(ctx, "real?", builtin_real_p, 1, 1);
+    reg(ctx, "complex?", builtin_real_p, 1, 1);
+    reg(ctx, "rational?", builtin_real_p, 1, 1);
+    reg(ctx, "exact?", builtin_integer_p, 1, 1);
+    reg(ctx, "inexact?", builtin_real_p, 1, 1);
+    reg(ctx, "char?", builtin_char_p, 1, 1);
+    reg(ctx, "symbol?", builtin_symbol_p, 1, 1);
+    reg(ctx, "list?", builtin_list_p, 1, 1);
     reg(ctx, "eq?", builtin_eq_p, 2, 2);
     reg(ctx, "eqv?", builtin_eq_p, 2, 2);
     reg(ctx, "equal?", builtin_equal_p, 2, 2);
@@ -574,18 +971,37 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "cons", builtin_cons, 2, 2);
     reg(ctx, "car", builtin_car, 1, 1);
     reg(ctx, "cdr", builtin_cdr, 1, 1);
+    reg(ctx, "caar", builtin_caar, 1, 1);
+    reg(ctx, "cadr", builtin_cadr, 1, 1);
+    reg(ctx, "cdar", builtin_cdar, 1, 1);
+    reg(ctx, "cddr", builtin_cddr, 1, 1);
+    reg(ctx, "caddr", builtin_caddr, 1, 1);
     reg(ctx, "list", builtin_list, 0, -1);
     reg(ctx, "length", builtin_length, 1, 1);
     reg(ctx, "append", builtin_append, 0, -1);
     reg(ctx, "reverse", builtin_reverse, 1, 1);
+    reg(ctx, "list-ref", builtin_list_ref, 2, 2);
+    reg(ctx, "list-tail", builtin_list_tail, 2, 2);
     reg(ctx, "map", builtin_map, 2, 2);
     reg(ctx, "filter", builtin_filter, 2, 2);
+    reg(ctx, "for-each", builtin_for_each, 2, 2);
     reg(ctx, "apply", builtin_apply, 2, -1);
+    reg(ctx, "assoc", builtin_assoc, 2, 2);
+    reg(ctx, "assv", builtin_assoc, 2, 2);
+    reg(ctx, "assq", builtin_assoc, 2, 2);
+    reg(ctx, "member", builtin_member, 2, 2);
+    reg(ctx, "memv", builtin_member, 2, 2);
+    reg(ctx, "memq", builtin_member, 2, 2);
+    reg(ctx, "set-car!", builtin_set_car, 2, 2);
+    reg(ctx, "set-cdr!", builtin_set_cdr, 2, 2);
+    reg(ctx, "range", builtin_range, 1, 3);
+    reg(ctx, "iota", builtin_range, 1, 3);
 
     // I/O
     reg(ctx, "display", builtin_display, 1, 1);
     reg(ctx, "newline", builtin_newline, 0, 0);
     reg(ctx, "write", builtin_write, 1, 1);
+    reg(ctx, "printf", builtin_printf, 1, -1);
 
     // Math
     reg(ctx, "sqrt", builtin_sqrt, 1, 1);
@@ -594,17 +1010,42 @@ void interp_register_builtins(interp_ctx_t* ctx) {
     reg(ctx, "floor", builtin_floor, 1, 1);
     reg(ctx, "ceiling", builtin_ceiling, 1, 1);
     reg(ctx, "round", builtin_round, 1, 1);
+    reg(ctx, "truncate", builtin_truncate, 1, 1);
+    reg(ctx, "quotient", builtin_quotient, 2, 2);
+    reg(ctx, "gcd", builtin_gcd, 2, 2);
     reg(ctx, "sin", builtin_sin, 1, 1);
     reg(ctx, "cos", builtin_cos, 1, 1);
     reg(ctx, "tan", builtin_tan, 1, 1);
+    reg(ctx, "asin", builtin_asin, 1, 1);
+    reg(ctx, "acos", builtin_acos, 1, 1);
+    reg(ctx, "atan", builtin_atan, 1, 2);
     reg(ctx, "exp", builtin_exp, 1, 1);
     reg(ctx, "log", builtin_log, 1, 1);
 
     // String
     reg(ctx, "string-length", builtin_string_length, 1, 1);
     reg(ctx, "string-append", builtin_string_append, 0, -1);
+    reg(ctx, "string-ref", builtin_string_ref, 2, 2);
+    reg(ctx, "substring", builtin_substring, 2, 3);
+    reg(ctx, "string-contains", builtin_string_contains, 2, 2);
+    reg(ctx, "string-upcase", builtin_string_upcase, 1, 1);
+    reg(ctx, "string-downcase", builtin_string_downcase, 1, 1);
     reg(ctx, "number->string", builtin_number_to_string, 1, 1);
     reg(ctx, "string->number", builtin_string_to_number, 1, 1);
+    reg(ctx, "symbol->string", builtin_symbol_to_string, 1, 1);
+    reg(ctx, "string->symbol", builtin_string_to_symbol, 1, 1);
+
+    // Type conversions
+    reg(ctx, "exact->inexact", builtin_exact_to_inexact, 1, 1);
+    reg(ctx, "inexact->exact", builtin_inexact_to_exact, 1, 1);
+    reg(ctx, "char->integer", builtin_char_to_integer, 1, 1);
+    reg(ctx, "integer->char", builtin_integer_to_char, 1, 1);
+
+    // Misc
+    reg(ctx, "void", builtin_void, 0, 0);
+    reg(ctx, "error", builtin_error, 0, -1);
+    reg(ctx, "begin", builtin_begin, 0, -1);
+    reg(ctx, "identity", builtin_identity, 1, 1);
 
     // Constants
     interp_frame_define(ctx->env, "#t", interp_make_bool(ctx, true));
